@@ -1,0 +1,91 @@
+# yaml-language-server: $schema=https://niro.apxlabs.ai/schema/v1/scope.json
+#
+# What Niro is authorized to test. Edit this file to authorize targets
+# before your first pentest.
+#
+# ---------------------------------------------------------------------
+# IMPORTANT: one Niro config per environment
+# ---------------------------------------------------------------------
+# Keep environments in SEPARATE Niro configs. Mixing localhost, staging,
+# and production URLs in one allowlist is the #1 way to accidentally
+# pentest production. Niro picks from what it sees — if prod is in
+# this file, prod is on the menu, even when the dev said "test on
+# staging." Each Niro config has its own allowlist, credentials, and
+# stored knowledge, so Niro cannot cross between environments. For
+# multiple environments, scaffold a separate niro/ directory per env
+# (e.g., niro/, niro-staging/, niro-prod/) and pass the appropriate
+# absolute path as `niro_config_absolute_path` from your coding agent.
+#
+# ---------------------------------------------------------------------
+# How entries work
+# ---------------------------------------------------------------------
+# Each entry: required `target` (host:portspec); optional `excluded: true`.
+# Excluded entries are evaluated first — deny wins over allow. Anything
+# not listed is denied at the kernel by netfilter.
+#
+# ---------------------------------------------------------------------
+# Reachability
+# ---------------------------------------------------------------------
+# Every target must be reachable from inside the Niro container.
+# `localhost` and `127.0.0.1` mean your HOST machine's loopback —
+# Niro auto-translates these so services bound to your host (a dev
+# server, a local Postgres, etc.) are reachable from the container.
+# Verify any target before listing it:
+#
+#   docker run --rm curlimages/curl -v <host:port>
+#
+# If that connects, the Niro agent will too. Niro's pre-flight probe
+# runs the same TCP dial and refuses to start if any target fails.
+#
+# ---------------------------------------------------------------------
+# Target syntax
+# ---------------------------------------------------------------------
+#   api.staging.acme.dev:443           Exact FQDN, single port.
+#   api.staging.acme.dev:80,443        Multi-port list.
+#   api.staging.acme.dev:8000-8999     Port range.
+#   *.staging.acme.dev:443             Subdomain wildcard (one DNS level).
+#   10.0.42.0/24:443                   IPv4 CIDR.
+#   [2001:db8::/32]:443                IPv6 CIDR (brackets required with port).
+#
+# ---------------------------------------------------------------------
+# Worked example — uncomment + edit to authorize your targets
+# ---------------------------------------------------------------------
+# targets:
+#   # Allow every staging subdomain over HTTPS.
+#   - target: "*.staging.acme.dev:443"
+#
+#   # Allow a specific staging API on multiple ports.
+#   - target: "api.staging.acme.dev:80,443"
+#
+#   # Carve out a staging host that's actually production-billing —
+#   # excluded entries are evaluated first, deny wins.
+#   - target: "metrics.staging.acme.dev:443"
+#     excluded: true
+#
+#   # Allow an internal CIDR.
+#   - target: "10.0.42.0/24:443"
+#
+# ---------------------------------------------------------------------
+# Email access (optional) — default off
+# ---------------------------------------------------------------------
+# Some tests need to receive email: confirming a signup link, reading a
+# one-time passcode, completing a password reset. Setting this to true
+# authorizes Niro to:
+#   1. SIGN UP / CREATE ACCOUNTS on the targets above using a disposable
+#      email address, to exercise those email-verification flows; and
+#   2. reach Niro's mail service to read what gets sent to that address.
+#
+# The mail service is permitted for egress only — it is NOT a target you're
+# authorizing Niro to test, and never appears in the authorized-scope audit.
+# Leave it off unless a flow needs it; off keeps the agent reaching only the
+# targets above and creating no accounts.
+#
+# allow_email_access: true
+
+targets:
+  - target: "host.docker.internal:3000"
+  - target: "host.docker.internal:5001"
+  - target: "127.0.0.1:3000"
+  - target: "127.0.0.1:5001"
+  - target: "localhost:3000"
+  - target: "localhost:5001"

@@ -18,7 +18,7 @@ jobs:
 
     env:
       NIRO_AGENT: codex
-      NIRO_CONFIG_DIR: niro
+      NIRO_CONFIG_DIR: niro-local
       NIRO_GOAL: "Pentest this application"
       NIRO_CI_ARTIFACT_INCLUDE_FINDINGS: "true"
       NIRO_CI_ARTIFACT_UPLOAD_DEBUG_LOGS: "true"
