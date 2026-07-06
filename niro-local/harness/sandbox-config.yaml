@@ -1,0 +1,15 @@
+app:
+  port: 8194
+  debug: true
+  key: dify-sandbox
+max_workers: 4
+max_requests: 50
+worker_timeout: 15
+python_path: /opt/python/bin/python3
+nodejs_path: /usr/local/bin/node
+enable_network: true
+allowed_syscalls:
+proxy:
+  socks5: ""
+  http: http://ssrf_proxy:3128
+  https: http://ssrf_proxy:3128
