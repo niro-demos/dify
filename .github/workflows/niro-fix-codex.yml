@@ -1,0 +1,76 @@
+# Niro — Fix (Codex): pentest this app with Codex and open fix PRs for what it finds.
+# Writes to the repo: pushes fix branches and opens PRs authored by your GitHub App
+# bot (not a person), so PRs follow the normal PR process (CI runs, reviews apply)
+# and a human merges.
+#
+# Requires these secrets (repo or org level):
+#   NIRO_APP_ID, NIRO_APP_PRIVATE_KEY  a GitHub App you own, installed on this repo
+#                                      with Contents + Pull requests write.
+#   CODEX_AUTH_JSON_B64                base64 Codex auth.json (subscription login).
+name: Niro Fix (Codex)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read   # the App token does the writing, not GITHUB_TOKEN
+
+concurrency:
+  group: niro-fix-codex-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    name: Pentest and open fix PRs (Codex)
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+
+    env:
+      NIRO_AGENT: codex
+      NIRO_CONFIG_DIR: niro
+      NIRO_GOAL: "Pentest this application and create PRs"
+      NIRO_CI_ARTIFACT_INCLUDE_FINDINGS: "true"
+      NIRO_CI_ARTIFACT_UPLOAD_DEBUG_LOGS: "true"
+
+    steps:
+      - name: Mint Niro app token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.NIRO_APP_ID }}
+          private-key: ${{ secrets.NIRO_APP_PRIVATE_KEY }}
+
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Install Niro CI
+        shell: bash
+        run: curl -fsSL https://raw.githubusercontent.com/apxlabs-ai/niro/main/install-ci.sh | sh
+
+      - name: Run Niro
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          CODEX_AUTH_JSON_B64: ${{ secrets.CODEX_AUTH_JSON_B64 }}
+        run: niro-ci fix
+
+      - name: Upload Niro knowledge
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: niro-knowledge
+          path: niro-knowledge.tar
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Upload debug logs
+        if: always() && contains(fromJSON('["true","TRUE","1","yes","YES","on","ON"]'), env.NIRO_CI_ARTIFACT_UPLOAD_DEBUG_LOGS)
+        uses: actions/upload-artifact@v7
+        with:
+          name: niro-debug-logs-unsafe
+          path: niro-debug-artifacts/**
+          if-no-files-found: ignore
+          retention-days: 7
