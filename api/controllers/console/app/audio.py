@@ -24,6 +24,7 @@ from controllers.console.wraps import (
     RBACPermission,
     RBACResourceScope,
     account_initialization_required,
+    edit_permission_required,
     rbac_permission_required,
     setup_required,
 )
@@ -95,6 +96,8 @@ class ChatMessageAudioApi(Resource):
     @setup_required
     @login_required
     @account_initialization_required
+    @edit_permission_required
+    @rbac_permission_required(RBACResourceScope.APP, RBACPermission.APP_TEST_AND_RUN)
     @get_app_model(mode=[AppMode.CHAT, AppMode.AGENT_CHAT, AppMode.ADVANCED_CHAT])
     def post(self, app_model: App):
         file = request.files["file"]
@@ -145,6 +148,8 @@ class ChatMessageTextApi(Resource):
     @setup_required
     @login_required
     @account_initialization_required
+    @edit_permission_required
+    @rbac_permission_required(RBACResourceScope.APP, RBACPermission.APP_TEST_AND_RUN)
     @get_app_model
     def post(self, app_model: App):
         try:

@@ -17,6 +17,7 @@ from controllers.console.wraps import (
     RBACPermission,
     RBACResourceScope,
     account_initialization_required,
+    edit_permission_required,
     rbac_permission_required,
     setup_required,
     with_current_tenant_id,
@@ -158,6 +159,7 @@ class AdvancedChatAppWorkflowRunListApi(Resource):
     @setup_required
     @login_required
     @account_initialization_required
+    @edit_permission_required
     @rbac_permission_required(RBACResourceScope.APP, RBACPermission.APP_CREATE_AND_MANAGEMENT)
     @get_app_model(mode=[AppMode.ADVANCED_CHAT])
     def get(self, app_model: App):
@@ -256,6 +258,7 @@ class AdvancedChatAppWorkflowRunCountApi(Resource):
     @setup_required
     @login_required
     @account_initialization_required
+    @edit_permission_required
     @rbac_permission_required(RBACResourceScope.APP, RBACPermission.APP_CREATE_AND_MANAGEMENT)
     @get_app_model(mode=[AppMode.ADVANCED_CHAT])
     def get(self, app_model: App):
@@ -297,6 +300,7 @@ class WorkflowRunListApi(Resource):
     @setup_required
     @login_required
     @account_initialization_required
+    @edit_permission_required
     @rbac_permission_required(RBACResourceScope.APP, RBACPermission.APP_CREATE_AND_MANAGEMENT)
     @get_app_model(mode=[AppMode.ADVANCED_CHAT, AppMode.WORKFLOW])
     def get(self, app_model: App):
@@ -339,6 +343,7 @@ class WorkflowRunCountApi(Resource):
     @setup_required
     @login_required
     @account_initialization_required
+    @edit_permission_required
     @rbac_permission_required(RBACResourceScope.APP, RBACPermission.APP_CREATE_AND_MANAGEMENT)
     @get_app_model(mode=[AppMode.ADVANCED_CHAT, AppMode.WORKFLOW])
     def get(self, app_model: App):
@@ -380,6 +385,7 @@ class WorkflowRunDetailApi(Resource):
     @setup_required
     @login_required
     @account_initialization_required
+    @edit_permission_required
     @rbac_permission_required(RBACResourceScope.APP, RBACPermission.APP_CREATE_AND_MANAGEMENT)
     @get_app_model(mode=[AppMode.ADVANCED_CHAT, AppMode.WORKFLOW])
     def get(self, app_model: App, run_id: UUID):
@@ -411,6 +417,7 @@ class WorkflowRunNodeExecutionListApi(Resource):
     @login_required
     @account_initialization_required
     @with_current_user
+    @edit_permission_required
     @rbac_permission_required(RBACResourceScope.APP, RBACPermission.APP_CREATE_AND_MANAGEMENT)
     @get_app_model(mode=[AppMode.ADVANCED_CHAT, AppMode.WORKFLOW])
     def get(self, current_user: Account, app_model: App, run_id: UUID):

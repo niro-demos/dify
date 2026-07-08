@@ -823,6 +823,8 @@ class AgentApiKeyListApi(BaseApiKeyListResource):
 
     @console_ns.response(200, "Agent service API keys", console_ns.models[ApiKeyList.__name__])
     @with_current_tenant_id
+    @edit_permission_required
+    @rbac_permission_required(RBACResourceScope.APP, RBACPermission.APP_RELEASE_AND_VERSION)
     def get(self, tenant_id: str, agent_id: UUID) -> dict[str, object]:
         app_model = _resolve_agent_app_model(tenant_id=tenant_id, agent_id=agent_id)
         return dump_response(ApiKeyList, self._get_api_key_list(str(app_model.id), tenant_id))

@@ -759,6 +759,17 @@ class AppApi(Resource):
         response_model = AppDetailWithSite.model_validate(app_model, from_attributes=True).model_copy(
             update={"permission_keys": permission_keys_map.get(str(app_model.id), [])}
         )
+        if response_model.site is not None:
+            permission_keys = set(permission_keys_map.get(str(app_model.id), []))
+            can_manage_release = (
+                current_user.has_edit_permission
+                if not dify_config.RBAC_ENABLED
+                else bool({"app.full_access", "app.acl.release_and_version"} & permission_keys)
+            )
+            if not can_manage_release:
+                response_model = response_model.model_copy(
+                    update={"site": response_model.site.model_copy(update={"access_token": None, "code": None})}
+                )
         return response_model.model_dump(mode="json")
 
     @console_ns.doc("update_app")

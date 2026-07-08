@@ -10,8 +10,9 @@ from flask.testing import FlaskClient
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from models import Account
+from models import Account, Site
 from models.account import AccountStatus, TenantAccountRole
+from models.agent import Agent, AgentScope, AgentSource, AgentStatus
 from models.enums import ApiTokenType
 from models.model import ApiToken, App, AppMode
 from tests.test_containers_integration_tests.controllers.console.helpers import (
@@ -33,10 +34,79 @@ def setup_app(
     return test_client_with_containers, headers, app
 
 
+def _create_normal_member(db_session: Session, owner: Account) -> Account:
+    """Create a same-tenant normal member for negative authorization checks."""
+    tenant_id = owner.current_tenant_id
+    assert tenant_id is not None
+
+    account = Account(
+        email=f"normal-{owner.id}@example.com",
+        name="Normal User",
+        interface_language="en-US",
+        status=AccountStatus.ACTIVE,
+    )
+    account.initialized_at = owner.initialized_at
+    db_session.add(account)
+    db_session.commit()
+
+    from models import TenantAccountJoin
+
+    db_session.add(
+        TenantAccountJoin(
+            tenant_id=tenant_id,
+            account_id=account.id,
+            role=TenantAccountRole.NORMAL,
+            current=True,
+        )
+    )
+    db_session.commit()
+
+    account.set_tenant_id(tenant_id)
+    account.timezone = "UTC"
+    db_session.commit()
+    return account
+
+
+def _create_site(db_session: Session, app: App, account_id: str, code: str) -> Site:
+    site = Site(
+        app_id=app.id,
+        title="Test Site",
+        default_language="en-US",
+        customize_token_strategy="not_allow",
+        prompt_public=False,
+        code=code,
+        created_by=account_id,
+        updated_by=account_id,
+    )
+    db_session.add(site)
+    db_session.commit()
+    return site
+
+
+def _create_agent_for_app(db_session: Session, tenant_id: str, account_id: str, app: App) -> Agent:
+    agent = Agent(
+        tenant_id=tenant_id,
+        name="Test Agent",
+        description="",
+        role="",
+        scope=AgentScope.ROSTER,
+        source=AgentSource.AGENT_APP,
+        status=AgentStatus.ACTIVE,
+        app_id=app.id,
+        backing_app_id=app.id,
+        created_by=account_id,
+        updated_by=account_id,
+    )
+    db_session.add(agent)
+    db_session.commit()
+    return agent
+
+
 @pytest.fixture(autouse=True)
 def cleanup_api_tokens(db_session_with_containers: Session):
     """Remove API tokens created during each test."""
     yield
+    db_session_with_containers.rollback()
     db_session_with_containers.execute(delete(ApiToken))
     db_session_with_containers.commit()
 
@@ -128,6 +198,92 @@ class TestAppApiKeyListResource:
 
         assert resp.status_code == 404
 
+    def test_normal_member_cannot_read_peer_app_raw_api_keys(
+        self,
+        db_session_with_containers: Session,
+        test_client_with_containers: FlaskClient,
+    ) -> None:
+        owner, tenant = create_console_account_and_tenant(db_session_with_containers)
+        normal = _create_normal_member(db_session_with_containers, owner)
+        app = create_console_app(db_session_with_containers, tenant.id, owner.id, AppMode.CHAT)
+        token = ApiToken(
+            tenant_id=tenant.id,
+            app_id=app.id,
+            type=ApiTokenType.APP,
+            token="app-regression-secret-token",
+        )
+        db_session_with_containers.add(token)
+        db_session_with_containers.commit()
+
+        headers = authenticate_console_client(test_client_with_containers, normal)
+
+        resp = test_client_with_containers.get(f"/console/api/apps/{app.id}/api-keys", headers=headers)
+
+        assert resp.status_code == 403
+
+    def test_normal_member_cannot_read_agent_service_api_keys(
+        self,
+        db_session_with_containers: Session,
+        test_client_with_containers: FlaskClient,
+    ) -> None:
+        owner, tenant = create_console_account_and_tenant(db_session_with_containers)
+        normal = _create_normal_member(db_session_with_containers, owner)
+        app = create_console_app(db_session_with_containers, tenant.id, owner.id, AppMode.AGENT)
+        agent = _create_agent_for_app(db_session_with_containers, tenant.id, owner.id, app)
+        token = ApiToken(
+            tenant_id=tenant.id,
+            app_id=app.id,
+            type=ApiTokenType.APP,
+            token="app-agent-regression-secret-token",
+        )
+        db_session_with_containers.add(token)
+        db_session_with_containers.commit()
+
+        headers = authenticate_console_client(test_client_with_containers, normal)
+
+        resp = test_client_with_containers.get(f"/console/api/agent/{agent.id}/api-keys", headers=headers)
+
+        assert resp.status_code == 403
+
+    def test_normal_member_app_detail_does_not_expose_site_secret(
+        self,
+        db_session_with_containers: Session,
+        test_client_with_containers: FlaskClient,
+    ) -> None:
+        owner, tenant = create_console_account_and_tenant(db_session_with_containers)
+        normal = _create_normal_member(db_session_with_containers, owner)
+        app = create_console_app(db_session_with_containers, tenant.id, owner.id, AppMode.CHAT)
+        _create_site(db_session_with_containers, app, owner.id, "site-regression-secret")
+        headers = authenticate_console_client(test_client_with_containers, normal)
+
+        resp = test_client_with_containers.get(f"/console/api/apps/{app.id}", headers=headers)
+
+        assert resp.status_code == 200
+        assert resp.json is not None
+        assert resp.json["site"] is not None
+        assert resp.json["site"].get("access_token") is None
+        assert resp.json["site"].get("code") is None
+
+    def test_normal_member_cannot_read_workspace_dataset_api_keys(
+        self,
+        db_session_with_containers: Session,
+        test_client_with_containers: FlaskClient,
+    ) -> None:
+        owner, tenant = create_console_account_and_tenant(db_session_with_containers)
+        normal = _create_normal_member(db_session_with_containers, owner)
+        token = ApiToken(
+            tenant_id=tenant.id,
+            type=ApiTokenType.DATASET,
+            token="dataset-regression-secret-token",
+        )
+        db_session_with_containers.add(token)
+        db_session_with_containers.commit()
+        headers = authenticate_console_client(test_client_with_containers, normal)
+
+        resp = test_client_with_containers.get("/console/api/datasets/api-keys", headers=headers)
+
+        assert resp.status_code == 403
+
 
 class TestAppApiKeyResource:
     """Tests for DELETE /apps/<resource_id>/api-keys/<api_key_id>."""
@@ -184,3 +340,58 @@ class TestAppApiKeyResource:
         ):
             with pytest.raises(Forbidden):
                 BaseApiKeyResource.delete(resource, "rid", "kid", "tenant-id", non_admin)
+
+
+class TestConsolePrivilegedAppSurfaces:
+    """Regression coverage for same-tenant normal members reaching privileged app surfaces."""
+
+    def test_normal_member_cannot_invoke_audio_debug_routes(
+        self,
+        db_session_with_containers: Session,
+        test_client_with_containers: FlaskClient,
+    ) -> None:
+        owner, tenant = create_console_account_and_tenant(db_session_with_containers)
+        normal = _create_normal_member(db_session_with_containers, owner)
+        app = create_console_app(db_session_with_containers, tenant.id, owner.id, AppMode.CHAT)
+        headers = authenticate_console_client(test_client_with_containers, normal)
+
+        audio_resp = test_client_with_containers.post(f"/console/api/apps/{app.id}/audio-to-text", headers=headers)
+        tts_resp = test_client_with_containers.post(
+            f"/console/api/apps/{app.id}/text-to-audio",
+            json={"text": "hello"},
+            headers=headers,
+        )
+
+        assert audio_resp.status_code == 403
+        assert tts_resp.status_code == 403
+
+    @pytest.mark.parametrize(
+        ("path_template", "expected_unfixed_status"),
+        [
+            ("/console/api/apps/{app_id}/workflow-runs", 200),
+            ("/console/api/apps/{app_id}/workflow-runs/count", 200),
+            ("/console/api/apps/{app_id}/workflow-runs/00000000-0000-0000-0000-000000000000", 404),
+            (
+                "/console/api/apps/{app_id}/workflow-runs/00000000-0000-0000-0000-000000000000/node-executions",
+                404,
+            ),
+        ],
+    )
+    def test_normal_member_cannot_read_workflow_run_surfaces(
+        self,
+        path_template: str,
+        expected_unfixed_status: int,
+        db_session_with_containers: Session,
+        test_client_with_containers: FlaskClient,
+    ) -> None:
+        owner, tenant = create_console_account_and_tenant(db_session_with_containers)
+        normal = _create_normal_member(db_session_with_containers, owner)
+        app = create_console_app(db_session_with_containers, tenant.id, owner.id, AppMode.WORKFLOW)
+        headers = authenticate_console_client(test_client_with_containers, normal)
+
+        resp = test_client_with_containers.get(path_template.format(app_id=app.id), headers=headers)
+
+        assert resp.status_code == 403, (
+            f"unfixed code reaches the handler and returns HTTP {expected_unfixed_status}; "
+            "normal members must be denied before workflow run data lookup"
+        )
