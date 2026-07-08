@@ -2,11 +2,11 @@ import json
 import logging
 from typing import Any, TypedDict, cast
 
-from httpx import get
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 from core.entities.provider_entities import ProviderConfig, ProviderConfigType
+from core.helper import ssrf_proxy
 from core.tools.__base.tool_runtime import ToolRuntime
 from core.tools.custom_tool.provider import ApiToolProviderController
 from core.tools.entities.api_entities import ToolApiEntity, ToolProviderApiEntity
@@ -203,7 +203,7 @@ class ApiToolManageService:
     @staticmethod
     def get_api_tool_provider_remote_schema(user_id: str, tenant_id: str, url: str):
         """
-        get api tool provider remote schema
+        Fetch and validate a remote API tool provider schema through the SSRF-protected HTTP client.
         """
         headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)"
@@ -212,12 +212,11 @@ class ApiToolManageService:
         }
 
         try:
-            response = get(url, headers=headers, timeout=10)
+            response = ssrf_proxy.get(url, headers=headers, timeout=10)
             if response.status_code != 200:
                 raise ValueError(f"Got status code {response.status_code}")
             schema = response.text
 
-            # try to parse schema, avoid SSRF attack
             ApiToolManageService.parser_api_schema(schema)
         except Exception:
             logger.exception("parse api schema error")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import importlib
+import inspect
 from contextlib import ExitStack, contextmanager
 from inspect import unwrap
 from types import ModuleType, SimpleNamespace
@@ -226,6 +227,16 @@ def test_api_provider_remote_schema_get(app: Flask, controller_module, monkeypat
 
     assert resp == {"schema": "ok"}
     service_mock.assert_called_once_with(user.id, "tenant-10", "https://example.com/")
+
+
+def test_api_provider_remote_schema_requires_tool_manage_permission(controller_module: ModuleType):
+    source = inspect.getsource(controller_module.ToolApiProviderGetRemoteSchemaApi.get)
+
+    assert "@is_admin_or_owner_required" in source
+    assert (
+        "@rbac_permission_required(RBACResourceScope.WORKSPACE, RBACPermission.TOOL_MANAGE, resource_required=False)"
+        in source
+    )
 
 
 def test_api_provider_list_tools_get(app: Flask, controller_module, monkeypatch: pytest.MonkeyPatch):

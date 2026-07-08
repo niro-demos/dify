@@ -509,6 +509,8 @@ class ToolApiProviderGetRemoteSchemaApi(Resource):
     @console_ns.response(200, "Success", console_ns.models[ToolProviderOpaqueResponse.__name__])
     @setup_required
     @login_required
+    @is_admin_or_owner_required
+    @rbac_permission_required(RBACResourceScope.WORKSPACE, RBACPermission.TOOL_MANAGE, resource_required=False)
     @account_initialization_required
     @with_current_user
     @with_current_tenant_id
