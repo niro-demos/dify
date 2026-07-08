@@ -83,6 +83,9 @@ def load_user_from_request(request_from_flask_login: Request) -> LoginUser | Non
             raise Unauthorized("Invalid Authorization token.")
         if not user_id:
             raise Unauthorized("Invalid Authorization token.")
+        session_id = decoded.get("session_id")
+        if not isinstance(session_id, str) or not AccountService.is_console_session_valid(user_id, session_id):
+            raise Unauthorized("Invalid Authorization token.")
 
         logged_in_account = AccountService.load_logged_in_account(account_id=user_id, session=db.session)
         return logged_in_account
@@ -102,6 +105,9 @@ def load_user_from_request(request_from_flask_login: Request) -> LoginUser | Non
         user_id = decoded.get("user_id")
         source = decoded.get("token_source")
         if source or not user_id:
+            return None
+        session_id = decoded.get("session_id")
+        if not isinstance(session_id, str) or not AccountService.is_console_session_valid(user_id, session_id):
             return None
         return AccountService.load_logged_in_account(account_id=user_id, session=db.session)
     elif request.blueprint == "web":

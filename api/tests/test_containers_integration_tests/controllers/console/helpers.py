@@ -78,8 +78,13 @@ def create_console_app(db_session: Session, tenant_id: str, account_id: str, mod
 
 def authenticate_console_client(test_client: FlaskClient, account: Account) -> dict[str, str]:
     """Attach console auth cookies/headers for endpoints guarded by login_required."""
+    import services.account_service as account_service_module
+    from extensions.ext_redis import redis_client as active_redis_client
+
+    account_service_module.redis_client = active_redis_client
     access_token = AccountService.get_account_jwt_token(account)
     csrf_token = generate_csrf_token(account.id)
+    test_client.set_cookie(_real_cookie_name("access_token"), access_token, domain="localhost")
     test_client.set_cookie(_real_cookie_name("csrf_token"), csrf_token, domain="localhost")
     return {
         "Authorization": f"Bearer {access_token}",

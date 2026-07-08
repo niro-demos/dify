@@ -132,6 +132,7 @@ class TokenPair(BaseModel):
 
 REFRESH_TOKEN_PREFIX = "refresh_token:"
 ACCOUNT_REFRESH_TOKEN_PREFIX = "account_refresh_token:"
+ACCOUNT_SESSION_PREFIX = "account_session:"
 REFRESH_TOKEN_EXPIRY = timedelta(days=dify_config.REFRESH_TOKEN_EXPIRE_DAYS)
 ACCOUNT_LAST_ACTIVE_REFRESH_PREFIX = "account_last_active_refresh:"
 ACCOUNT_LAST_ACTIVE_REFRESH_INTERVAL = timedelta(minutes=10)
@@ -230,6 +231,10 @@ class AccountService:
         return f"{ACCOUNT_REFRESH_TOKEN_PREFIX}{account_id}"
 
     @staticmethod
+    def _get_account_session_key(account_id: str) -> str:
+        return f"{ACCOUNT_SESSION_PREFIX}{account_id}"
+
+    @staticmethod
     def _get_account_last_active_refresh_key(account_id: str) -> str:
         return f"{ACCOUNT_LAST_ACTIVE_REFRESH_PREFIX}{account_id}"
 
@@ -274,6 +279,27 @@ class AccountService:
     def _delete_refresh_token(refresh_token: str, account_id: str):
         redis_client.delete(AccountService._get_refresh_token_key(refresh_token))
         redis_client.delete(AccountService._get_account_refresh_token_key(account_id))
+        redis_client.delete(AccountService._get_account_session_key(account_id))
+
+    @staticmethod
+    def _rotate_account_session(account_id: str) -> str:
+        session_id = secrets.token_urlsafe(32)
+        redis_client.setex(AccountService._get_account_session_key(account_id), REFRESH_TOKEN_EXPIRY, session_id)
+        return session_id
+
+    @staticmethod
+    def is_console_session_valid(account_id: str, session_id: str | None) -> bool:
+        """Return whether the access-token session id still matches server-side session state."""
+        if not session_id:
+            return False
+
+        stored_session_id = redis_client.get(AccountService._get_account_session_key(account_id))
+        if not stored_session_id:
+            return False
+        if isinstance(stored_session_id, bytes):
+            stored_session_id = stored_session_id.decode("utf-8")
+
+        return stored_session_id == session_id
 
     @staticmethod
     def get_account_by_email(session: Session | scoped_session, email: str) -> Account | None:
@@ -352,8 +378,10 @@ class AccountService:
     def get_account_jwt_token(account: Account) -> str:
         exp_dt = datetime.now(UTC) + timedelta(minutes=dify_config.ACCESS_TOKEN_EXPIRE_MINUTES)
         exp = int(exp_dt.timestamp())
+        session_id = AccountService._rotate_account_session(account.id)
         payload = {
             "user_id": account.id,
+            "session_id": session_id,
             "exp": exp,
             "iss": dify_config.EDITION,
             "sub": "Console API Passport",
