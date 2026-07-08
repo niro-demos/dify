@@ -6,6 +6,7 @@ specifically focusing on update and delete operations for datasets backed by Tes
 """
 
 import datetime
+from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -292,7 +293,7 @@ class TestDatasetServiceUpdateDatasetApiStatus:
             patch("services.dataset_service.current_user", owner),
             patch("services.dataset_service.naive_utc_now", return_value=current_time),
         ):
-            DatasetService.update_dataset_api_status(dataset.id, True, session=db_session_with_containers)
+            DatasetService.update_dataset_api_status(dataset.id, True, owner, session=db_session_with_containers)
 
         # Assert
         db_session_with_containers.refresh(dataset)
@@ -327,7 +328,7 @@ class TestDatasetServiceUpdateDatasetApiStatus:
             patch("services.dataset_service.current_user", owner),
             patch("services.dataset_service.naive_utc_now", return_value=current_time),
         ):
-            DatasetService.update_dataset_api_status(dataset.id, False, session=db_session_with_containers)
+            DatasetService.update_dataset_api_status(dataset.id, False, owner, session=db_session_with_containers)
 
         # Assert
         db_session_with_containers.refresh(dataset)
@@ -350,8 +351,11 @@ class TestDatasetServiceUpdateDatasetApiStatus:
         dataset_id = str(uuid4())
 
         # Act & Assert
+        owner, _ = DatasetUpdateDeleteTestDataFactory.create_account_with_tenant(
+            db_session_with_containers, role=TenantAccountRole.OWNER
+        )
         with pytest.raises(NotFound, match="Dataset not found"):
-            DatasetService.update_dataset_api_status(dataset_id, True, session=db_session_with_containers)
+            DatasetService.update_dataset_api_status(dataset_id, True, owner, session=db_session_with_containers)
 
     def test_update_dataset_api_status_missing_current_user_error(self, db_session_with_containers: Session):
         """
@@ -375,10 +379,11 @@ class TestDatasetServiceUpdateDatasetApiStatus:
 
         # Act & Assert
         with (
-            patch("services.dataset_service.current_user", None),
-            pytest.raises(ValueError, match="Current user or current user id not found"),
+            pytest.raises(ValueError, match="Current user id not found"),
         ):
-            DatasetService.update_dataset_api_status(dataset.id, True, session=db_session_with_containers)
+            DatasetService.update_dataset_api_status(
+                dataset.id, True, SimpleNamespace(id=None), session=db_session_with_containers
+            )
 
         # Verify no commit was attempted
         db_session_with_containers.rollback()

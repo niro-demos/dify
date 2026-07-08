@@ -3,12 +3,14 @@ from typing import Any, Literal
 from flask import request
 from flask_restx import Resource
 from pydantic import BaseModel, RootModel
+from werkzeug.exceptions import Forbidden
 
 from controllers.common.schema import query_params_from_model, register_response_schema_models, register_schema_models
 from controllers.console import console_ns
 from controllers.console.datasets.error import WebsiteCrawlError
-from controllers.console.wraps import account_initialization_required, setup_required
+from controllers.console.wraps import account_initialization_required, setup_required, with_current_user
 from libs.login import login_required
+from models.account import Account
 from services.website_service import WebsiteCrawlApiRequest, WebsiteCrawlStatusApiRequest, WebsiteService
 
 
@@ -40,7 +42,11 @@ class WebsiteCrawlApi(Resource):
     @setup_required
     @login_required
     @account_initialization_required
-    def post(self):
+    @with_current_user
+    def post(self, current_user: Account):
+        if not current_user.is_dataset_editor:
+            raise Forbidden()
+
         payload = WebsiteCrawlPayload.model_validate(console_ns.payload or {})
 
         # Create typed request and validate
@@ -69,7 +75,11 @@ class WebsiteCrawlStatusApi(Resource):
     @setup_required
     @login_required
     @account_initialization_required
-    def get(self, job_id: str):
+    @with_current_user
+    def get(self, current_user: Account, job_id: str):
+        if not current_user.is_dataset_editor:
+            raise Forbidden()
+
         args = WebsiteCrawlStatusQuery.model_validate(request.args.to_dict())
 
         # Create typed request and validate

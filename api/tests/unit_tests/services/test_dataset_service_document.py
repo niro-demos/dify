@@ -1833,6 +1833,35 @@ class TestDocumentServiceSaveDocumentAdditionalBranches:
                     session=mock_db.session,
                 )
 
+    def test_save_document_with_dataset_id_rejects_cross_owner_upload_file(self, account_context):
+        dataset = _make_dataset()
+        dataset_process_rule = SimpleNamespace(id="rule-1")
+        knowledge_config = _make_upload_knowledge_config(file_ids=["file-1"])
+        cross_owner_file = SimpleNamespace(id="file-1", name="secret.txt", created_by="other-user")
+
+        with (
+            patch("services.dataset_service.FeatureService.get_features", return_value=_make_features(enabled=False)),
+            patch("services.dataset_service.redis_client") as mock_redis,
+            patch("services.dataset_service.db") as mock_db,
+            patch.object(DocumentService, "get_documents_position", return_value=1),
+            patch.object(DocumentService, "build_document") as build_document,
+            patch("services.dataset_service.time.strftime", return_value="20260101010101"),
+            patch("services.dataset_service.secrets.randbelow", return_value=23),
+        ):
+            mock_redis.lock.return_value = _make_lock_context()
+            mock_db.session.scalars.return_value.all.side_effect = [[cross_owner_file], []]
+
+            with pytest.raises(FileNotExistsError, match="One or more files not found"):
+                DocumentService.save_document_with_dataset_id(
+                    dataset,
+                    knowledge_config,
+                    account_context,
+                    dataset_process_rule=dataset_process_rule,
+                    session=mock_db.session,
+                )
+
+        build_document.assert_not_called()
+
     def test_save_document_with_dataset_id_requires_notion_info_list_for_notion_import(self, account_context):
         dataset = _make_dataset()
         knowledge_config = KnowledgeConfig(

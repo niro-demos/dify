@@ -33,6 +33,12 @@ class TestFileService:
     def file_service(self, mock_session_maker):
         return FileService(session_factory=mock_session_maker)
 
+    @pytest.fixture
+    def account(self):
+        user = Account(name="Preview User", email="preview@example.com")
+        user.id = "user-1"
+        return user
+
     def test_init_with_engine(self):
         engine = MagicMock(spec=Engine)
         service = FileService(session_factory=engine)
@@ -210,7 +216,7 @@ class TestFileService:
             result = file_service.upload_text("text", long_name, "user", "tenant")
             assert len(result.name) == 200
 
-    def test_get_file_preview_success(self, file_service: FileService, mock_db_session):
+    def test_get_file_preview_success(self, file_service: FileService, mock_db_session, account: Account):
         # Setup
         upload_file = MagicMock(spec=UploadFile)
         upload_file.id = "file_id"
@@ -221,23 +227,23 @@ class TestFileService:
             mock_extract.return_value = "Extracted text content"
 
             # Execute
-            result = file_service.get_file_preview("file_id", "tenant_id")
+            result = file_service.get_file_preview("file_id", "tenant_id", account)
 
             # Assert
             assert result == "Extracted text content"
 
-    def test_get_file_preview_not_found(self, file_service: FileService, mock_db_session):
+    def test_get_file_preview_not_found(self, file_service: FileService, mock_db_session, account: Account):
         mock_db_session.scalar.return_value = None
         with pytest.raises(NotFound, match="File not found"):
-            file_service.get_file_preview("non_existent", "tenant_id")
+            file_service.get_file_preview("non_existent", "tenant_id", account)
 
-    def test_get_file_preview_unsupported_type(self, file_service: FileService, mock_db_session):
+    def test_get_file_preview_unsupported_type(self, file_service: FileService, mock_db_session, account: Account):
         upload_file = MagicMock(spec=UploadFile)
         upload_file.id = "file_id"
         upload_file.extension = "exe"
         mock_db_session.scalar.return_value = upload_file
         with pytest.raises(UnsupportedFileTypeError):
-            file_service.get_file_preview("file_id", "tenant_id")
+            file_service.get_file_preview("file_id", "tenant_id", account)
 
     def test_get_image_preview_success(self, file_service: FileService, mock_db_session):
         # Setup

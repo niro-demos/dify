@@ -153,6 +153,8 @@ class TestDatasetMetadataGetApi:
     def test_get_metadata_success(self, app: Flask, dataset, dataset_id):
         api = DatasetMetadataCreateApi()
         method = unwrap(api.get)
+        current_user = Account(name="Reader", email="reader@example.com")
+        current_user.id = "reader-1"
 
         with (
             app.test_request_context("/"),
@@ -169,14 +171,16 @@ class TestDatasetMetadataGetApi:
                     "built_in_field_enabled": False,
                 },
             ),
+            patch.object(DatasetService, "check_dataset_permission") as check_dataset_permission,
         ):
-            result, status = method(api, dataset_id)
+            result, status = method(api, current_user, dataset_id)
 
         assert status == 200
         assert result["doc_metadata"] == [{"id": "m1", "name": "author", "type": "string", "count": 0}]
         assert result["built_in_field_enabled"] is False
+        check_dataset_permission.assert_called_once()
 
-    def test_get_metadata_dataset_not_found(self, app: Flask, dataset_id):
+    def test_get_metadata_dataset_not_found(self, app: Flask, current_user, dataset_id):
         api = DatasetMetadataCreateApi()
         method = unwrap(api.get)
 
@@ -189,7 +193,7 @@ class TestDatasetMetadataGetApi:
             ),
         ):
             with pytest.raises(NotFound):
-                method(api, dataset_id)
+                method(api, current_user, dataset_id)
 
 
 class TestDatasetMetadataApi:

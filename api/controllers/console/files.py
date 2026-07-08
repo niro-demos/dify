@@ -127,10 +127,11 @@ class FilePreviewApi(Resource):
     @login_required
     @account_initialization_required
     @console_ns.response(200, "Success", console_ns.models[TextContentResponse.__name__])
+    @with_current_user
     @with_current_tenant_id
-    def get(self, current_tenant_id: str, file_id: UUID):
+    def get(self, current_tenant_id: str, current_user: Account, file_id: UUID):
         file_id_str = str(file_id)
-        text = FileService(db.engine).get_file_preview(file_id_str, current_tenant_id)
+        text = FileService(db.engine).get_file_preview(file_id_str, current_tenant_id, current_user)
         return {"content": text}
 
 

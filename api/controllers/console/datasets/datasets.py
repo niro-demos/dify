@@ -47,7 +47,7 @@ from libs.login import login_required
 from libs.url_utils import normalize_api_base_url
 from models import Account, ApiToken, Dataset, Document, DocumentSegment, UploadFile
 from models.dataset import DatasetPermission, DatasetPermissionEnum
-from models.enums import ApiTokenType, SegmentStatus
+from models.enums import ApiTokenType, CreatorUserRole, SegmentStatus
 from models.provider_ids import ModelProviderID
 from services.api_token_service import ApiTokenCache
 from services.dataset_service import DatasetPermissionService, DatasetService, DocumentService
@@ -813,8 +813,9 @@ class DatasetIndexingEstimateApi(Resource):
     @login_required
     @account_initialization_required
     @console_ns.expect(console_ns.models[IndexingEstimatePayload.__name__])
+    @with_current_user
     @with_current_tenant_id
-    def post(self, current_tenant_id: str):
+    def post(self, current_tenant_id: str, current_user: Account):
         payload = IndexingEstimatePayload.model_validate(console_ns.payload or {})
         args = payload.model_dump()
         # validate args
@@ -824,9 +825,22 @@ class DatasetIndexingEstimateApi(Resource):
             case "upload_file":
                 file_ids = args["info_list"]["file_info_list"]["file_ids"]
                 file_details = db.session.scalars(
-                    select(UploadFile).where(UploadFile.tenant_id == current_tenant_id, UploadFile.id.in_(file_ids))
+                    select(UploadFile).where(
+                        UploadFile.tenant_id == current_tenant_id,
+                        UploadFile.id.in_(file_ids),
+                        UploadFile.created_by_role == CreatorUserRole.ACCOUNT,
+                        UploadFile.created_by == current_user.id,
+                    )
                 ).all()
-                if file_details is None:
+                if (
+                    file_details is None
+                    or len(file_details) != len(set(file_ids))
+                    or any(
+                        getattr(file_detail, "created_by_role", CreatorUserRole.ACCOUNT) != CreatorUserRole.ACCOUNT
+                        or getattr(file_detail, "created_by", current_user.id) != current_user.id
+                        for file_detail in file_details
+                    )
+                ):
                     raise NotFound("File not found.")
 
                 if file_details:
@@ -1097,11 +1111,12 @@ class DatasetEnableApiApi(Resource):
     @login_required
     @account_initialization_required
     @console_ns.response(200, "Success", console_ns.models[SimpleResultResponse.__name__])
+    @with_current_user
     @rbac_permission_required(RBACResourceScope.DATASET, RBACPermission.DATASET_EDIT)
-    def post(self, dataset_id: UUID, status: str):
+    def post(self, current_user: Account, dataset_id: UUID, status: str):
         dataset_id_str = str(dataset_id)
 
-        DatasetService.update_dataset_api_status(dataset_id_str, status == "enable", db.session)
+        DatasetService.update_dataset_api_status(dataset_id_str, status == "enable", current_user, db.session)
 
         return {"result": "success"}, 200
 

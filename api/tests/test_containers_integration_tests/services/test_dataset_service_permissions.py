@@ -374,9 +374,10 @@ class TestDatasetServicePermissionsAndLifecycle:
     def test_update_dataset_api_status_raises_not_found_for_missing_dataset(
         self, flask_app_with_containers: Flask, db_session_with_containers: Session
     ):
+        owner, _ = DatasetPermissionIntegrationFactory.create_account_with_tenant(db_session_with_containers)
         with flask_app_with_containers.app_context():
             with pytest.raises(NotFound, match="Dataset not found"):
-                DatasetService.update_dataset_api_status(str(uuid4()), True, session=db_session_with_containers)
+                DatasetService.update_dataset_api_status(str(uuid4()), True, owner, session=db_session_with_containers)
 
     def test_update_dataset_api_status_requires_current_user_id(self, db_session_with_containers: Session):
         owner, tenant = DatasetPermissionIntegrationFactory.create_account_with_tenant(db_session_with_containers)
@@ -387,9 +388,10 @@ class TestDatasetServicePermissionsAndLifecycle:
             enable_api=False,
         )
 
-        with patch("services.dataset_service.current_user", SimpleNamespace(id=None)):
-            with pytest.raises(ValueError, match="Current user or current user id not found"):
-                DatasetService.update_dataset_api_status(dataset.id, True, session=db_session_with_containers)
+        with pytest.raises(ValueError, match="Current user id not found"):
+            DatasetService.update_dataset_api_status(
+                dataset.id, True, SimpleNamespace(id=None), session=db_session_with_containers
+            )
 
     def test_update_dataset_api_status_updates_fields_and_commits(self, db_session_with_containers: Session):
         owner, tenant = DatasetPermissionIntegrationFactory.create_account_with_tenant(db_session_with_containers)
@@ -405,7 +407,7 @@ class TestDatasetServicePermissionsAndLifecycle:
             patch("services.dataset_service.current_user", owner),
             patch("services.dataset_service.naive_utc_now", return_value=now),
         ):
-            DatasetService.update_dataset_api_status(dataset.id, True, session=db_session_with_containers)
+            DatasetService.update_dataset_api_status(dataset.id, True, owner, session=db_session_with_containers)
 
         db_session_with_containers.refresh(dataset)
         assert dataset.enable_api is True

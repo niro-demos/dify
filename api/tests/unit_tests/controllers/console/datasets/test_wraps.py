@@ -39,27 +39,62 @@ class TestGetRagPipeline:
         pipeline = Mock(spec=Pipeline)
         pipeline.id = "pipeline-1"
         pipeline.tenant_id = "tenant-1"
+        dataset = Mock()
+        pipeline.retrieve_dataset.return_value = dataset
 
         @get_rag_pipeline
         def dummy_view(**kwargs):
             return kwargs["pipeline"]
 
+        current_user = Mock()
         mocker.patch(
             "controllers.console.datasets.wraps.current_account_with_tenant",
-            return_value=(Mock(), "tenant-1"),
+            return_value=(current_user, "tenant-1"),
         )
 
         mocker.patch(
             "controllers.console.datasets.wraps.db.session.scalar",
             return_value=pipeline,
         )
+        check_permission = mocker.patch("controllers.console.datasets.wraps.DatasetService.check_dataset_permission")
 
         result = dummy_view(pipeline_id="pipeline-1")
 
         assert result is pipeline
+        check_permission.assert_called_once()
+
+    def test_pipeline_dataset_permission_denial_stops_handler(self, mocker: MockerFixture):
+        pipeline = Mock(spec=Pipeline)
+        pipeline.id = "pipeline-1"
+        pipeline.tenant_id = "tenant-1"
+        dataset = Mock()
+        pipeline.retrieve_dataset.return_value = dataset
+
+        handler = Mock(return_value="ok")
+        decorated = get_rag_pipeline(handler)
+        current_user = Mock()
+
+        mocker.patch(
+            "controllers.console.datasets.wraps.current_account_with_tenant",
+            return_value=(current_user, "tenant-1"),
+        )
+        mocker.patch(
+            "controllers.console.datasets.wraps.db.session.scalar",
+            return_value=pipeline,
+        )
+        mocker.patch(
+            "controllers.console.datasets.wraps.DatasetService.check_dataset_permission",
+            side_effect=PermissionError("denied"),
+        )
+
+        with pytest.raises(PermissionError, match="denied"):
+            decorated(pipeline_id="pipeline-1")
+
+        handler.assert_not_called()
 
     def test_pipeline_id_removed_from_kwargs(self, mocker: MockerFixture):
         pipeline = Mock(spec=Pipeline)
+        pipeline.retrieve_dataset.return_value = Mock()
 
         @get_rag_pipeline
         def dummy_view(**kwargs):
@@ -75,6 +110,7 @@ class TestGetRagPipeline:
             "controllers.console.datasets.wraps.db.session.scalar",
             return_value=pipeline,
         )
+        mocker.patch("controllers.console.datasets.wraps.DatasetService.check_dataset_permission")
 
         result = dummy_view(pipeline_id="pipeline-1")
 
@@ -82,6 +118,7 @@ class TestGetRagPipeline:
 
     def test_pipeline_id_cast_to_string(self, mocker: MockerFixture):
         pipeline = Mock(spec=Pipeline)
+        pipeline.retrieve_dataset.return_value = Mock()
 
         @get_rag_pipeline
         def dummy_view(**kwargs):
@@ -96,6 +133,7 @@ class TestGetRagPipeline:
             "controllers.console.datasets.wraps.db.session.scalar",
             return_value=pipeline,
         )
+        mocker.patch("controllers.console.datasets.wraps.DatasetService.check_dataset_permission")
 
         result = dummy_view(pipeline_id=123)
 

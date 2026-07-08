@@ -3,7 +3,7 @@ import json
 from contextlib import ExitStack
 from inspect import unwrap
 from types import SimpleNamespace
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import ANY, MagicMock, PropertyMock, patch
 
 import pytest
 from flask import Flask
@@ -1376,6 +1376,8 @@ class TestDatasetIndexingEstimateApi:
         method = unwrap(api.post)
 
         payload = self._base_payload()
+        current_user = make_account()
+        current_user.id = "user-1"
 
         mock_file = self._upload_file()
 
@@ -1403,10 +1405,45 @@ class TestDatasetIndexingEstimateApi:
                 return_value=mock_response,
             ),
         ):
-            response, status = method(api, "tenant-1")
+            response, status = method(api, "tenant-1", current_user)
 
         assert status == 200
         assert response == {"tokens": 100}
+
+    def test_post_rejects_cross_owner_upload_file(self, app: Flask):
+        api = DatasetIndexingEstimateApi()
+        method = unwrap(api.post)
+
+        payload = self._base_payload()
+        current_user = make_account()
+        current_user.id = "user-1"
+        cross_owner_file = self._upload_file(file_id="file-1")
+        cross_owner_file.created_by = "other-user"
+
+        with (
+            app.test_request_context("/"),
+            patch.object(
+                type(console_ns),
+                "payload",
+                new_callable=PropertyMock,
+                return_value=payload,
+            ),
+            patch(
+                "controllers.console.datasets.datasets.DocumentService.estimate_args_validate",
+                return_value=None,
+            ),
+            patch(
+                "controllers.console.datasets.datasets.db.session.scalars",
+                return_value=MagicMock(all=lambda: [cross_owner_file]),
+            ),
+            patch(
+                "controllers.console.datasets.datasets.IndexingRunner.indexing_estimate",
+            ) as indexing_estimate,
+        ):
+            with pytest.raises(NotFound):
+                method(api, "tenant-1", current_user)
+
+        indexing_estimate.assert_not_called()
 
     def test_post_file_not_found(self, app: Flask):
         api = DatasetIndexingEstimateApi()
@@ -1432,12 +1469,14 @@ class TestDatasetIndexingEstimateApi:
             ),
         ):
             with pytest.raises(NotFound):
-                method(api, "tenant-1")
+                method(api, "tenant-1", make_account())
 
     def test_post_llm_bad_request_error(self, app: Flask):
         api = DatasetIndexingEstimateApi()
         method = unwrap(api.post)
         mock_file = self._upload_file()
+        current_user = make_account()
+        current_user.id = "user-1"
 
         payload = self._base_payload()
 
@@ -1463,12 +1502,14 @@ class TestDatasetIndexingEstimateApi:
             ),
         ):
             with pytest.raises(ProviderNotInitializeError):
-                method(api, "tenant-1")
+                method(api, "tenant-1", current_user)
 
     def test_post_provider_token_not_init(self, app: Flask):
         api = DatasetIndexingEstimateApi()
         method = unwrap(api.post)
         mock_file = self._upload_file()
+        current_user = make_account()
+        current_user.id = "user-1"
 
         payload = self._base_payload()
 
@@ -1494,12 +1535,14 @@ class TestDatasetIndexingEstimateApi:
             ),
         ):
             with pytest.raises(ProviderNotInitializeError):
-                method(api, "tenant-1")
+                method(api, "tenant-1", current_user)
 
     def test_post_generic_exception(self, app: Flask):
         api = DatasetIndexingEstimateApi()
         method = unwrap(api.post)
         mock_file = self._upload_file()
+        current_user = make_account()
+        current_user.id = "user-1"
 
         payload = self._base_payload()
 
@@ -1525,7 +1568,7 @@ class TestDatasetIndexingEstimateApi:
             ),
         ):
             with pytest.raises(IndexingEstimateError):
-                method(api, "tenant-1")
+                method(api, "tenant-1", current_user)
 
 
 class TestDatasetRelatedAppListApi:
@@ -1892,34 +1935,38 @@ class TestDatasetEnableApiApi:
     def test_enable_api(self, app: Flask):
         api = DatasetEnableApiApi()
         method = unwrap(api.post)
+        current_user = make_account()
 
         with (
             app.test_request_context("/"),
             patch(
                 "controllers.console.datasets.datasets.DatasetService.update_dataset_api_status",
                 return_value=None,
-            ),
+            ) as update_dataset_api_status,
         ):
-            response, status = method(api, "dataset-1", "enable")
+            response, status = method(api, current_user, "dataset-1", "enable")
 
         assert status == 200
         assert response["result"] == "success"
+        update_dataset_api_status.assert_called_once_with("dataset-1", True, current_user, ANY)
 
     def test_disable_api(self, app: Flask):
         api = DatasetEnableApiApi()
         method = unwrap(api.post)
+        current_user = make_account()
 
         with (
             app.test_request_context("/"),
             patch(
                 "controllers.console.datasets.datasets.DatasetService.update_dataset_api_status",
                 return_value=None,
-            ),
+            ) as update_dataset_api_status,
         ):
-            response, status = method(api, "dataset-1", "disable")
+            response, status = method(api, current_user, "dataset-1", "disable")
 
         assert status == 200
         assert response["result"] == "success"
+        update_dataset_api_status.assert_called_once_with("dataset-1", False, current_user, ANY)
 
 
 class TestDatasetApiBaseUrlApi:

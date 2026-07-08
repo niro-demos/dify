@@ -173,13 +173,20 @@ class FileService:
 
         return upload_file
 
-    def get_file_preview(self, file_id: str, tenant_id: str):
+    def get_file_preview(self, file_id: str, tenant_id: str, user: Account):
         """
         Return a short text preview extracted from a document file.
         """
         with self._session_maker(expire_on_commit=False) as session:
             upload_file = session.scalar(
-                select(UploadFile).where(UploadFile.id == file_id, UploadFile.tenant_id == tenant_id).limit(1)
+                select(UploadFile)
+                .where(
+                    UploadFile.id == file_id,
+                    UploadFile.tenant_id == tenant_id,
+                    UploadFile.created_by_role == CreatorUserRole.ACCOUNT,
+                    UploadFile.created_by == user.id,
+                )
+                .limit(1)
             )
 
         if not upload_file:

@@ -281,9 +281,10 @@ class TestFilePreviewApi:
         mock_file_service.get_file_preview.return_value = "preview text"
 
         with app.test_request_context():
-            result = get_method(api, "tenant-123", "1234")
+            result = get_method(api, "tenant-123", mock_account_context, "1234")
 
         assert result == {"content": "preview text"}
+        mock_file_service.get_file_preview.assert_called_once_with("1234", "tenant-123", mock_account_context)
 
 
 class TestFileSupportTypeApi:

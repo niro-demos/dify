@@ -53,6 +53,7 @@ from models.dataset import (
     SegmentAttachmentBinding,
 )
 from models.enums import (
+    CreatorUserRole,
     DatasetRuntimeMode,
     DataSourceType,
     DocumentCreatedFrom,
@@ -1417,14 +1418,16 @@ class DatasetService:
         ).all()
 
     @staticmethod
-    def update_dataset_api_status(dataset_id: str, status: bool, session: scoped_session | Session):
+    def update_dataset_api_status(dataset_id: str, status: bool, account: Account, session: scoped_session | Session):
         dataset = DatasetService.get_dataset(dataset_id, session)
         if dataset is None:
             raise NotFound("Dataset not found.")
+        DatasetService.check_dataset_permission(dataset, account, session)
+
         dataset.enable_api = status
-        if not current_user or not current_user.id:
-            raise ValueError("Current user or current user id not found")
-        dataset.updated_by = current_user.id
+        if not account.id:
+            raise ValueError("Current user id not found")
+        dataset.updated_by = account.id
         dataset.updated_at = naive_utc_now()
         session.commit()
 
@@ -2281,10 +2284,16 @@ class DocumentService:
                                 select(UploadFile).where(
                                     UploadFile.tenant_id == dataset.tenant_id,
                                     UploadFile.id.in_(upload_file_list),
+                                    UploadFile.created_by_role == CreatorUserRole.ACCOUNT,
+                                    UploadFile.created_by == current_user.id,
                                 )
                             ).all()
                         )
-                        if len(files) != len(set(upload_file_list)):
+                        if len(files) != len(set(upload_file_list)) or any(
+                            getattr(file, "created_by_role", CreatorUserRole.ACCOUNT) != CreatorUserRole.ACCOUNT
+                            or getattr(file, "created_by", current_user.id) != current_user.id
+                            for file in files
+                        ):
                             raise FileNotExistsError("One or more files not found.")
 
                         file_names = [file.name for file in files]
