@@ -231,9 +231,12 @@ class FileService:
 
         return generator, upload_file
 
-    def get_public_image_preview(self, file_id: str):
+    def get_public_image_preview(self, file_id: str, tenant_id: str | None = None):
         with self._session_maker(expire_on_commit=False) as session:
-            upload_file = session.scalar(select(UploadFile).where(UploadFile.id == file_id).limit(1))
+            stmt = select(UploadFile).where(UploadFile.id == file_id)
+            if tenant_id is not None:
+                stmt = stmt.where(UploadFile.tenant_id == tenant_id)
+            upload_file = session.scalar(stmt.limit(1))
 
         if not upload_file:
             raise NotFound("File not found or signature is invalid")

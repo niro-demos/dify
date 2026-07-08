@@ -180,6 +180,10 @@ class TestWorkspaceWebappLogoApi:
         response = get_fn("workspace-id")
 
         assert response.mimetype == "image/png"
+        mock_file_service.return_value.get_public_image_preview.assert_called_once_with(
+            "logo-id",
+            tenant_id="workspace-id",
+        )
 
     @patch.object(module.TenantService, "get_custom_config")
     def test_logo_not_configured(self, mock_config):

@@ -172,6 +172,7 @@ class WorkspaceWebappLogoApi(Resource):
         try:
             generator, mimetype = FileService(db.engine).get_public_image_preview(
                 webapp_logo_file_id,
+                tenant_id=workspace_id_str,
             )
         except services.errors.file.UnsupportedFileTypeError:
             raise UnsupportedFileTypeError()

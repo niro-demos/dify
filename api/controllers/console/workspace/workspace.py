@@ -6,7 +6,7 @@ from flask import request
 from flask_restx import Resource
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
-from werkzeug.exceptions import Unauthorized
+from werkzeug.exceptions import BadRequest, Unauthorized
 
 import services
 from configs import dify_config
@@ -358,6 +358,15 @@ class CustomConfigWorkspaceApi(Resource):
         payload = console_ns.payload or {}
         args = WorkspaceCustomConfigPayload.model_validate(payload)
         tenant = db.get_or_404(Tenant, current_tenant_id)
+
+        if args.replace_webapp_logo is not None:
+            upload_files_by_id = FileService.get_upload_files_by_ids(
+                db.session,
+                current_tenant_id,
+                [args.replace_webapp_logo],
+            )
+            if args.replace_webapp_logo not in upload_files_by_id:
+                raise BadRequest("webapp logo file is not found")
 
         custom_config_dict: TenantCustomConfigDict = {
             "remove_webapp_brand": args.remove_webapp_brand

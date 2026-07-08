@@ -334,6 +334,12 @@ class TestFileService:
         with pytest.raises(NotFound, match="File not found or signature is invalid"):
             file_service.get_public_image_preview("file_id")
 
+    def test_get_public_image_preview_rejects_file_outside_tenant(self, file_service: FileService, mock_db_session):
+        mock_db_session.scalar.return_value = None
+
+        with pytest.raises(NotFound, match="File not found or signature is invalid"):
+            file_service.get_public_image_preview("foreign_file_id", tenant_id="tenant-a")
+
     def test_get_public_image_preview_unsupported_type(self, file_service: FileService, mock_db_session):
         upload_file = MagicMock(spec=UploadFile)
         upload_file.id = "file_id"

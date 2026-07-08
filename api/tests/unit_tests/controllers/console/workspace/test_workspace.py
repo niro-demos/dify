@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from flask import Flask
 from werkzeug.datastructures import FileStorage
-from werkzeug.exceptions import Unauthorized
+from werkzeug.exceptions import BadRequest, Unauthorized
 
 import services
 from controllers.common.errors import (
@@ -18,6 +18,7 @@ from controllers.common.errors import (
     UnsupportedFileTypeError,
 )
 from controllers.console.error import AccountNotLinkTenantError
+from controllers.console.workspace import workspace as workspace_module
 from controllers.console.workspace.workspace import (
     CustomConfigWorkspaceApi,
     SwitchWorkspaceApi,
@@ -525,6 +526,37 @@ class TestCustomConfigWorkspaceApi:
 
         assert tenant.custom_config_dict["replace_webapp_logo"] == "old-logo"
         assert result["result"] == "success"
+
+    def test_rejects_webapp_logo_from_another_tenant(self, app: Flask):
+        api = CustomConfigWorkspaceApi()
+        method = inspect.unwrap(api.post)
+
+        tenant = make_tenant(custom_config={"replace_webapp_logo": "owned-logo"})
+        payload = {"replace_webapp_logo": "foreign-logo"}
+
+        with (
+            app.test_request_context("/workspaces/custom-config", json=payload),
+            patch("controllers.console.workspace.workspace.db.get_or_404", return_value=tenant),
+            patch(
+                "controllers.console.workspace.workspace.FileService.get_upload_files_by_ids",
+                return_value={},
+            ) as get_upload_files_by_ids_mock,
+            patch("controllers.console.workspace.workspace.db.session.commit") as commit_mock,
+            patch(
+                "controllers.console.workspace.workspace.WorkspaceService.get_tenant_info",
+                return_value={"id": "tenant-a"},
+            ),
+        ):
+            with pytest.raises(BadRequest):
+                method(api, "tenant-a")
+
+        get_upload_files_by_ids_mock.assert_called_once_with(
+            workspace_module.db.session,
+            "tenant-a",
+            ["foreign-logo"],
+        )
+        commit_mock.assert_not_called()
+        assert tenant.custom_config_dict["replace_webapp_logo"] == "owned-logo"
 
 
 class TestWebappLogoWorkspaceApi:
