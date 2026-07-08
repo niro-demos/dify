@@ -388,25 +388,48 @@ class TestInstalledAppApi:
         with pytest.raises(BadRequest):
             method(api, tenant_id, installed_app)
 
-    def test_patch_update_pin(self, app: Flask, payload_patch: PayloadPatch, installed_app: MagicMock) -> None:
+    def test_patch_update_pin(
+        self, app: Flask, current_user: MagicMock, payload_patch: PayloadPatch, installed_app: MagicMock
+    ) -> None:
         api = module.InstalledAppApi()
         method = unwrap(api.patch)
 
         with (
             app.test_request_context("/", json={"is_pinned": True}),
             payload_patch({"is_pinned": True}),
+            patch.object(module.TenantService, "get_user_role", return_value="owner"),
             patch.object(module.db, "session"),
         ):
-            result = method(installed_app)
+            result = method(api, current_user, installed_app)
 
         assert installed_app.is_pinned is True
         assert result["result"] == "success"
 
-    def test_patch_no_change(self, app: Flask, payload_patch: PayloadPatch, installed_app: MagicMock) -> None:
+    def test_patch_rejects_normal_member_pin_update(
+        self, app: Flask, current_user: MagicMock, payload_patch: PayloadPatch, installed_app: MagicMock
+    ) -> None:
+        api = module.InstalledAppApi()
+        method = unwrap(api.patch)
+        current_user.role = "normal"
+
+        with (
+            app.test_request_context("/", json={"is_pinned": True}),
+            payload_patch({"is_pinned": True}),
+            patch.object(module.TenantService, "get_user_role", return_value="normal"),
+            patch.object(module.db, "session"),
+        ):
+            with pytest.raises(Forbidden):
+                method(api, current_user, installed_app)
+
+        assert installed_app.is_pinned is False
+
+    def test_patch_no_change(
+        self, app: Flask, current_user: MagicMock, payload_patch: PayloadPatch, installed_app: MagicMock
+    ) -> None:
         api = module.InstalledAppApi()
         method = unwrap(api.patch)
 
         with app.test_request_context("/", json={}), payload_patch({}), patch.object(module.db, "session"):
-            result = method(installed_app)
+            result = method(api, current_user, installed_app)
 
         assert result["result"] == "success"

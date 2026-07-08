@@ -307,11 +307,17 @@ class InstalledAppApi(InstalledAppResource):
 
     @console_ns.response(200, "Success", console_ns.models[SimpleResultMessageResponse.__name__])
     @console_ns.expect(console_ns.models[InstalledAppUpdatePayload.__name__])
-    def patch(self, installed_app: InstalledApp):
+    @with_current_user
+    def patch(self, current_user: Account, installed_app: InstalledApp):
         payload = InstalledAppUpdatePayload.model_validate(console_ns.payload or {})
 
         commit_args = False
         if payload.is_pinned is not None:
+            if current_user.current_tenant is None:
+                raise ValueError("current_user.current_tenant must not be None")
+            role = TenantService.get_user_role(current_user, current_user.current_tenant, session=db.session)
+            if role not in {"owner", "admin"}:
+                raise Forbidden()
             installed_app.is_pinned = payload.is_pinned
             commit_args = True
 
