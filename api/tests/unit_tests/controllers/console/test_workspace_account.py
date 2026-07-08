@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
-from flask import Flask
+from flask import Flask, Response
 
 from controllers.console.workspace.account import (
     AccountDeleteUpdateFeedbackApi,
@@ -663,6 +663,78 @@ class TestAccountDeletionFeedback:
 
 
 class TestCheckEmailUnique:
+    @patch("controllers.console.workspace.account.AccountService.check_email_unique", return_value=False)
+    @patch("controllers.console.workspace.account.AccountService.is_account_in_freeze", return_value=False)
+    @patch(
+        "controllers.console.wraps.FeatureService.get_system_features",
+        return_value=SimpleNamespace(enable_change_email=True),
+    )
+    def test_should_reject_unauthenticated_probe_before_email_lookup(
+        self,
+        mock_features: MagicMock,
+        mock_is_freeze: MagicMock,
+        mock_check_unique: MagicMock,
+        app: Flask,
+    ):
+        unauthorized_response = Response(
+            '{"code":"unauthorized","message":"Unauthorized."}',
+            status=401,
+            content_type="application/json",
+        )
+        login_manager = SimpleNamespace(unauthorized=MagicMock(return_value=unauthorized_response))
+
+        with (
+            app.test_request_context(
+                "/account/change-email/check-email-unique",
+                method="POST",
+                json={"email": "known@example.com"},
+            ),
+            patch("controllers.console.workspace.account.dify_config.EDITION", "CLOUD"),
+            patch("libs.login._resolve_current_user", return_value=None),
+            patch("libs.login._get_login_manager", return_value=login_manager),
+        ):
+            response = CheckEmailUnique().post()
+
+        assert response is unauthorized_response
+        assert response.status_code == 401
+        mock_features.assert_called_once_with()
+        login_manager.unauthorized.assert_called_once_with()
+        mock_is_freeze.assert_not_called()
+        mock_check_unique.assert_not_called()
+
+    @patch("controllers.console.workspace.account.AccountService.check_email_unique", return_value=True)
+    @patch("controllers.console.workspace.account.AccountService.is_account_in_freeze", return_value=False)
+    @patch(
+        "controllers.console.wraps.FeatureService.get_system_features",
+        return_value=SimpleNamespace(enable_change_email=True),
+    )
+    def test_should_allow_authenticated_email_uniqueness_check(
+        self,
+        mock_features: MagicMock,
+        mock_is_freeze: MagicMock,
+        mock_check_unique: MagicMock,
+        app: Flask,
+    ):
+        account = _build_account("current@example.com", "acc1")
+
+        with (
+            app.test_request_context(
+                "/account/change-email/check-email-unique",
+                method="POST",
+                json={"email": "New@Example.com"},
+            ),
+            patch("controllers.console.workspace.account.dify_config.EDITION", "CLOUD"),
+            patch("libs.login._resolve_current_user", return_value=account),
+            patch("libs.login.check_csrf_token"),
+            patch("controllers.console.wraps.current_account_with_tenant", return_value=(account, "tenant-id")),
+        ):
+            response = CheckEmailUnique().post()
+
+        assert response == {"result": "success"}
+        mock_features.assert_called_once_with()
+        mock_is_freeze.assert_called_once_with("new@example.com")
+        mock_check_unique.assert_called_once_with("new@example.com", session=ANY)
+
     @patch("controllers.console.workspace.account.AccountService.check_email_unique")
     @patch("controllers.console.workspace.account.AccountService.is_account_in_freeze")
     def test_should_normalize_email(self, mock_is_freeze: MagicMock, mock_check_unique: MagicMock, app: Flask):

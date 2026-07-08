@@ -765,7 +765,10 @@ class ChangeEmailResetApi(Resource):
 class CheckEmailUnique(Resource):
     @console_ns.expect(console_ns.models[CheckEmailUniquePayload.__name__])
     @console_ns.response(HTTPStatus.OK, "Success", console_ns.models[SimpleResultResponse.__name__])
+    @enable_change_email
     @setup_required
+    @login_required
+    @account_initialization_required
     def post(self):
         payload = console_ns.payload or {}
         args = CheckEmailUniquePayload.model_validate(payload)
