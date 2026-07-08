@@ -14,12 +14,26 @@ from controllers.common.errors import (
     FileTooLargeError,
     NoFileUploadedError,
     TooManyFilesError,
+    UnsupportedFileTypeError,
 )
 from controllers.web.files import FileApi
 
 
 def _app_model() -> SimpleNamespace:
     return SimpleNamespace(id="app-1")
+
+
+def _app_model_with_file_upload(file_upload: dict[str, object]) -> SimpleNamespace:
+    return SimpleNamespace(
+        id="app-1",
+        app_model_config=SimpleNamespace(
+            to_dict=lambda: {
+                "file_upload": file_upload,
+                "user_input_form": [],
+            },
+        ),
+        mode="chat",
+    )
 
 
 def _end_user() -> SimpleNamespace:
@@ -72,6 +86,66 @@ class TestFileApi:
         assert status == 201
         assert result["id"] == "file-1"
         assert result["name"] == "test.txt"
+
+    @patch("controllers.web.files.FileService")
+    @patch("controllers.web.files.db")
+    def test_rejects_local_image_when_published_image_upload_disabled(
+        self, mock_db: MagicMock, mock_file_svc_cls: MagicMock, app: Flask
+    ) -> None:
+        mock_db.engine = "engine"
+        app_model = _app_model_with_file_upload(
+            {
+                "image": {
+                    "enabled": False,
+                    "number_limits": 3,
+                    "detail": "high",
+                    "transfer_methods": ["remote_url", "local_file"],
+                }
+            }
+        )
+
+        data = {"file": (BytesIO(b"png"), "pixel.png")}
+        with app.test_request_context("/files/upload", method="POST", data=data, content_type="multipart/form-data"):
+            with pytest.raises(UnsupportedFileTypeError):
+                FileApi().post(app_model, _end_user())
+
+        mock_file_svc_cls.return_value.upload_file.assert_not_called()
+
+    @patch("controllers.web.files.FileService")
+    @patch("controllers.web.files.db")
+    def test_accepts_local_image_when_published_image_upload_enabled(
+        self, mock_db: MagicMock, mock_file_svc_cls: MagicMock, app: Flask
+    ) -> None:
+        mock_db.engine = "engine"
+        from datetime import datetime
+
+        upload_file = SimpleNamespace(
+            id="file-1",
+            name="pixel.png",
+            size=100,
+            extension="png",
+            mime_type="image/png",
+            created_by="eu-1",
+            created_at=datetime(2024, 1, 1),
+        )
+        mock_file_svc_cls.return_value.upload_file.return_value = upload_file
+        app_model = _app_model_with_file_upload(
+            {
+                "image": {
+                    "enabled": True,
+                    "number_limits": 3,
+                    "detail": "high",
+                    "transfer_methods": ["remote_url", "local_file"],
+                }
+            }
+        )
+
+        data = {"file": (BytesIO(b"png"), "pixel.png")}
+        with app.test_request_context("/files/upload", method="POST", data=data, content_type="multipart/form-data"):
+            result, status = FileApi().post(app_model, _end_user())
+
+        assert status == 201
+        assert result["name"] == "pixel.png"
 
     @patch("controllers.web.files.FileService")
     @patch("controllers.web.files.db")
