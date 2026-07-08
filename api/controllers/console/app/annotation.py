@@ -257,20 +257,8 @@ class AnnotationReplyActionStatusApi(Resource):
     @rbac_permission_required(RBACResourceScope.APP, RBACPermission.APP_VIEW_LAYOUT)
     def get(self, app_id: UUID, job_id: UUID, action: str):
         job_id_str = str(job_id)
-        app_annotation_job_key = f"{action}_app_annotation_job_{job_id_str}"
-        cache_result = redis_client.get(app_annotation_job_key)
-        if cache_result is None:
-            raise ValueError("The job does not exist.")
-
-        job_status = cache_result.decode()
-        error_msg = ""
-        if job_status == "error":
-            app_annotation_error_key = f"{action}_app_annotation_error_{job_id_str}"
-            error_msg = redis_client.get(app_annotation_error_key).decode()
-
-        return AnnotationJobStatusDetailResponse(
-            job_id=job_id_str, job_status=job_status, error_msg=error_msg
-        ).model_dump(mode="json"), 200
+        result = AppAnnotationService.get_annotation_reply_job_status(action, job_id_str, str(app_id))
+        return AnnotationJobStatusDetailResponse(**result).model_dump(mode="json"), 200
 
 
 @console_ns.route("/apps/<uuid:app_id>/annotations")

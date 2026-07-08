@@ -1,6 +1,6 @@
 import logging
 import uuid
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 import pandas as pd
 from sqlalchemy import delete, or_, select, update
@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 class AnnotationJobStatusDict(TypedDict):
     job_id: str
     job_status: str
+    error_msg: NotRequired[str]
 
 
 class EmbeddingModelDict(TypedDict):
@@ -90,6 +91,48 @@ class UpdateAnnotationSettingArgs(TypedDict):
 
 
 class AppAnnotationService:
+    @staticmethod
+    def _decode_redis_value(value: object) -> str:
+        if isinstance(value, bytes):
+            return value.decode()
+        if isinstance(value, str):
+            return value
+        return str(value)
+
+    @staticmethod
+    def _annotation_reply_job_key(action: str, job_id: str) -> str:
+        return f"{action}_app_annotation_job_{job_id}"
+
+    @staticmethod
+    def _annotation_reply_job_owner_key(action: str, job_id: str) -> str:
+        return f"{action}_app_annotation_job_{job_id}_app_id"
+
+    @classmethod
+    def _create_annotation_reply_job(cls, action: str, job_id: str, app_id: str) -> None:
+        redis_client.setnx(cls._annotation_reply_job_key(action, job_id), "waiting")
+        redis_client.setnx(cls._annotation_reply_job_owner_key(action, job_id), app_id)
+
+    @classmethod
+    def get_annotation_reply_job_status(cls, action: str, job_id: str, app_id: str) -> AnnotationJobStatusDict:
+        app_annotation_job_key = cls._annotation_reply_job_key(action, job_id)
+        cache_result = redis_client.get(app_annotation_job_key)
+        if cache_result is None:
+            raise NotFound("The job does not exist.")
+
+        app_annotation_job_owner_key = cls._annotation_reply_job_owner_key(action, job_id)
+        owner_app_id = redis_client.get(app_annotation_job_owner_key)
+        if owner_app_id is None or cls._decode_redis_value(owner_app_id) != app_id:
+            raise NotFound("The job does not exist.")
+
+        job_status = cls._decode_redis_value(cache_result)
+        error_msg = ""
+        if job_status == "error":
+            app_annotation_error_key = f"{action}_app_annotation_error_{job_id}"
+            error_result = redis_client.get(app_annotation_error_key)
+            error_msg = cls._decode_redis_value(error_result) if error_result is not None else ""
+
+        return {"job_id": job_id, "job_status": job_status, "error_msg": error_msg}
+
     @staticmethod
     def _get_annotation_by_ref(annotation_ref: AnnotationRef, session: scoped_session) -> MessageAnnotation | None:
         return session.scalar(
@@ -181,9 +224,7 @@ class AppAnnotationService:
 
         # async job
         job_id = str(uuid.uuid4())
-        enable_app_annotation_job_key = f"enable_app_annotation_job_{str(job_id)}"
-        # send batch add segments task
-        redis_client.setnx(enable_app_annotation_job_key, "waiting")
+        cls._create_annotation_reply_job("enable", job_id, app_id)
         current_user, current_tenant_id = current_account_with_tenant()
         enable_annotation_reply_task.delay(
             str(job_id),
@@ -206,9 +247,7 @@ class AppAnnotationService:
 
         # async job
         job_id = str(uuid.uuid4())
-        disable_app_annotation_job_key = f"disable_app_annotation_job_{str(job_id)}"
-        # send batch add segments task
-        redis_client.setnx(disable_app_annotation_job_key, "waiting")
+        cls._create_annotation_reply_job("disable", job_id, app_id)
         disable_annotation_reply_task.delay(str(job_id), app_id, current_tenant_id)
         return {"job_id": job_id, "job_status": "waiting"}
 

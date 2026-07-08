@@ -6,7 +6,7 @@ import logging
 from io import BytesIO
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pandas as pd
 import pytest
@@ -316,7 +316,12 @@ class TestAppAnnotationServiceEnableDisable:
 
             # Assert
             assert result == {"job_id": "uuid-1", "job_status": "waiting"}
-            mock_redis.setnx.assert_called_once_with("enable_app_annotation_job_uuid-1", "waiting")
+            mock_redis.setnx.assert_has_calls(
+                [
+                    call("enable_app_annotation_job_uuid-1", "waiting"),
+                    call("enable_app_annotation_job_uuid-1_app_id", "app-1"),
+                ]
+            )
             mock_task.delay.assert_called_once_with(
                 "uuid-1",
                 "app-1",
@@ -363,7 +368,12 @@ class TestAppAnnotationServiceEnableDisable:
 
             # Assert
             assert result == {"job_id": "uuid-2", "job_status": "waiting"}
-            mock_redis.setnx.assert_called_once_with("disable_app_annotation_job_uuid-2", "waiting")
+            mock_redis.setnx.assert_has_calls(
+                [
+                    call("disable_app_annotation_job_uuid-2", "waiting"),
+                    call("disable_app_annotation_job_uuid-2_app_id", "app-1"),
+                ]
+            )
             mock_task.delay.assert_called_once_with("uuid-2", "app-1", tenant_id)
 
 

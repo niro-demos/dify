@@ -11,7 +11,6 @@ from controllers.console.wraps import edit_permission_required
 from controllers.service_api import service_api_ns
 from controllers.service_api.wraps import validate_app_token
 from extensions.ext_database import db
-from extensions.ext_redis import redis_client
 from fields.annotation_fields import Annotation, AnnotationList
 from fields.base import ResponseModel
 from models.model import App
@@ -157,18 +156,7 @@ class AnnotationReplyActionStatusApi(Resource):
     def get(self, app_model: App, job_id: UUID, action: str):
         """Get the status of an annotation reply action job."""
         job_id_str = str(job_id)
-        app_annotation_job_key = f"{action}_app_annotation_job_{job_id_str}"
-        cache_result = redis_client.get(app_annotation_job_key)
-        if cache_result is None:
-            raise ValueError("The job does not exist.")
-
-        job_status = cache_result.decode()
-        error_msg = ""
-        if job_status == "error":
-            app_annotation_error_key = f"{action}_app_annotation_error_{job_id_str}"
-            error_msg = redis_client.get(app_annotation_error_key).decode()
-
-        return {"job_id": job_id_str, "job_status": job_status, "error_msg": error_msg}, 200
+        return AppAnnotationService.get_annotation_reply_job_status(action, job_id_str, app_model.id), 200
 
 
 @service_api_ns.route("/apps/annotations")

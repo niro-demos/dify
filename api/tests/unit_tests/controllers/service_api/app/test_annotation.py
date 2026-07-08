@@ -21,7 +21,9 @@ import pytest
 from flask import Flask
 from flask_restx.api import HTTPStatus
 from pydantic import ValidationError
+from werkzeug.exceptions import NotFound
 
+from controllers.console.app.annotation import AnnotationReplyActionStatusApi as ConsoleAnnotationReplyActionStatusApi
 from controllers.service_api.app.annotation import (
     AnnotationCreatePayload,
     AnnotationListApi,
@@ -220,6 +222,46 @@ class TestAnnotationReplyActionApi:
 
 
 class TestAnnotationReplyActionStatusApi:
+    def test_same_app_can_read_owned_job(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        job_id = uuid.uuid4()
+
+        def _get(key: str):
+            if key == f"enable_app_annotation_job_{job_id}":
+                return b"waiting"
+            if key == f"enable_app_annotation_job_{job_id}_app_id":
+                return b"app-a"
+            return None
+
+        monkeypatch.setattr(redis_client, "get", _get)
+
+        api = AnnotationReplyActionStatusApi()
+        handler = unwrap(api.get)
+        app_model = SimpleNamespace(id="app-a")
+
+        response, status = handler(api, app_model=app_model, job_id=job_id, action="enable")
+
+        assert status == 200
+        assert response == {"job_id": str(job_id), "job_status": "waiting", "error_msg": ""}
+
+    def test_cross_app_cannot_read_owned_job(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        job_id = uuid.uuid4()
+
+        def _get(key: str):
+            if key == f"enable_app_annotation_job_{job_id}":
+                return b"waiting"
+            if key == f"enable_app_annotation_job_{job_id}_app_id":
+                return b"app-a"
+            return None
+
+        monkeypatch.setattr(redis_client, "get", _get)
+
+        api = AnnotationReplyActionStatusApi()
+        handler = unwrap(api.get)
+        app_model = SimpleNamespace(id="app-b")
+
+        with pytest.raises(NotFound):
+            handler(api, app_model=app_model, job_id=job_id, action="enable")
+
     def test_missing_job(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(redis_client, "get", lambda *_args, **_kwargs: None)
 
@@ -227,11 +269,13 @@ class TestAnnotationReplyActionStatusApi:
         handler = unwrap(api.get)
         app_model = SimpleNamespace(id="app")
 
-        with pytest.raises(ValueError):
+        with pytest.raises(NotFound):
             handler(api, app_model=app_model, job_id="j1", action="enable")
 
     def test_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def _get(key):
+        def _get(key: str):
+            if key == "enable_app_annotation_job_j1_app_id":
+                return b"app"
             if "error" in key:
                 return b"oops"
             return b"error"
@@ -247,6 +291,48 @@ class TestAnnotationReplyActionStatusApi:
         assert status == 200
         assert response["job_status"] == "error"
         assert response["error_msg"] == "oops"
+
+
+class TestConsoleAnnotationReplyActionStatusApi:
+    def test_same_app_can_read_owned_job(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        app_id = uuid.uuid4()
+        job_id = uuid.uuid4()
+
+        def _get(key: str):
+            if key == f"disable_app_annotation_job_{job_id}":
+                return b"waiting"
+            if key == f"disable_app_annotation_job_{job_id}_app_id":
+                return str(app_id).encode()
+            return None
+
+        monkeypatch.setattr(redis_client, "get", _get)
+
+        api = ConsoleAnnotationReplyActionStatusApi()
+        handler = unwrap(api.get)
+
+        response, status = handler(api, app_id=app_id, job_id=job_id, action="disable")
+
+        assert status == 200
+        assert response == {"job_id": str(job_id), "job_status": "waiting", "error_msg": ""}
+
+    def test_cross_app_cannot_read_owned_job(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        app_id = uuid.uuid4()
+        job_id = uuid.uuid4()
+
+        def _get(key: str):
+            if key == f"disable_app_annotation_job_{job_id}":
+                return b"waiting"
+            if key == f"disable_app_annotation_job_{job_id}_app_id":
+                return str(uuid.uuid4()).encode()
+            return None
+
+        monkeypatch.setattr(redis_client, "get", _get)
+
+        api = ConsoleAnnotationReplyActionStatusApi()
+        handler = unwrap(api.get)
+
+        with pytest.raises(NotFound):
+            handler(api, app_id=app_id, job_id=job_id, action="disable")
 
 
 class TestAnnotationListApi:
