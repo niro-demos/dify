@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import pytest
 from flask import Flask
+from werkzeug.exceptions import Forbidden
 
 from controllers.console.app.agent import (
     AgentDriveFilesByAgentApi,
@@ -39,7 +40,7 @@ def _file_ctx(*, files: dict[str, bytes] | None = None):
     return app.test_request_context("/", method="POST", data=data, content_type="multipart/form-data")
 
 
-_USER = SimpleNamespace(id="user-1")
+_USER = SimpleNamespace(id="user-1", has_edit_permission=True)
 _APP = SimpleNamespace(id="app-1", tenant_id="tenant-1", mode=AppMode.AGENT, bound_agent_id="agent-1")
 _WORKFLOW_APP = SimpleNamespace(id="app-1", tenant_id="tenant-1", mode=AppMode.WORKFLOW, bound_agent_id=None)
 
@@ -190,6 +191,23 @@ def test_files_by_agent_commit_uses_agent_route_and_ignores_node_id():
     resolve_app.assert_called_once_with(tenant_id="tenant-1", agent_id="agent-1")
 
 
+def test_files_by_agent_commit_requires_app_edit_before_mutating_drive() -> None:
+    raw = _raw(AgentDriveFilesByAgentApi.post)
+    with _json_ctx({"upload_file_id": "0fa6f9bc-3416-4476-8857-a13129704dd9"}):
+        with (
+            patch(f"{_MOD}.resolve_agent_runtime_app_model", return_value=_APP),
+            patch(f"{_MOD}._require_agent_app_edit", side_effect=Forbidden, create=True) as require_app_edit,
+            patch(
+                f"{_MOD}._commit_drive_file_for_app", return_value=({"file": {"drive_key": "files/sample.pdf"}}, 201)
+            ) as commit,
+        ):
+            with pytest.raises(Forbidden):
+                raw(AgentDriveFilesByAgentApi(), "tenant-1", _USER, "agent-1")
+
+    require_app_edit.assert_called_once_with(tenant_id="tenant-1", current_user=_USER, app_model=_APP)
+    commit.assert_not_called()
+
+
 def test_files_commit_404_when_upload_not_in_tenant():
     from controllers.console.app.agent import AgentDriveFilesApi
 
@@ -260,6 +278,21 @@ def test_files_by_agent_delete_uses_agent_route_and_ignores_node_id():
 
     assert body == {"result": "success", "removed_keys": ["files/sample.pdf"]}
     resolve_app.assert_called_once_with(tenant_id="tenant-1", agent_id="agent-1")
+
+
+def test_files_by_agent_delete_requires_app_edit_before_mutating_drive() -> None:
+    raw = _raw(AgentDriveFilesByAgentApi.delete)
+    with _json_ctx(method="DELETE", query_string="key=files/sample.pdf"):
+        with (
+            patch(f"{_MOD}.resolve_agent_runtime_app_model", return_value=_APP),
+            patch(f"{_MOD}._require_agent_app_edit", side_effect=Forbidden, create=True) as require_app_edit,
+            patch(f"{_MOD}._delete_drive_file_for_app", return_value={"result": "success"}) as delete_file,
+        ):
+            with pytest.raises(Forbidden):
+                raw(AgentDriveFilesByAgentApi(), "tenant-1", _USER, "agent-1")
+
+    require_app_edit.assert_called_once_with(tenant_id="tenant-1", current_user=_USER, app_model=_APP)
+    delete_file.assert_not_called()
 
 
 def test_files_delete_resolves_workflow_node_agent():

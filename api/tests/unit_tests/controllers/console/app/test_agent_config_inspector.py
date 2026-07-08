@@ -10,7 +10,9 @@ import inspect
 from types import SimpleNamespace
 from unittest.mock import PropertyMock, patch
 
+import pytest
 from flask import Flask
+from werkzeug.exceptions import Forbidden
 
 from controllers.console.app import agent_config_inspector as inspector
 from controllers.console.app.agent_config_inspector import (
@@ -39,7 +41,7 @@ def _raw(method):
 
 
 _APP = SimpleNamespace(id="app-1", tenant_id="tenant-1", bound_agent_id="agent-1")
-_USER = SimpleNamespace(id="acct-1")
+_USER = SimpleNamespace(id="acct-1", has_edit_permission=True)
 
 
 def test_manifest_by_agent_resolves_build_draft_version():
@@ -240,6 +242,29 @@ def test_file_upload_by_agent_delegates_to_service_owned_upload_lookup():
     assert (
         config_service.return_value.push_file_for_console.call_args.kwargs["config_version_kind"].value == "build_draft"
     )
+
+
+def test_file_upload_by_agent_requires_app_edit_before_mutating_config() -> None:
+    raw = _raw(AgentConfigFilesByAgentApi.post)
+    with app.test_request_context("/", method="POST", json={"upload_file_id": "upload-1"}):
+        with (
+            patch(f"{_MOD}.resolve_agent_runtime_app_model", return_value=_APP),
+            patch(f"{_MOD}.AgentComposerService") as composer,
+            patch(f"{_MOD}._require_agent_app_edit", side_effect=Forbidden, create=True) as require_app_edit,
+            patch.object(
+                type(console_ns),
+                "payload",
+                new_callable=PropertyMock,
+                return_value={"upload_file_id": "upload-1"},
+            ),
+            patch(f"{_MOD}._file_upload_response", return_value=({"file": {"name": "guide.txt"}}, 201)) as upload,
+        ):
+            composer.load_agent_composer.return_value = {"draft": {"id": "draft-1"}}
+            with pytest.raises(Forbidden):
+                raw(AgentConfigFilesByAgentApi(), "tenant-1", _USER, "agent-1")
+
+    require_app_edit.assert_called_once_with(tenant_id="tenant-1", current_user=_USER, app_model=_APP)
+    upload.assert_not_called()
 
 
 def test_skill_list_api_uses_config_list_shape() -> None:

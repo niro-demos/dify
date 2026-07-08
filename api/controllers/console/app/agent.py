@@ -5,13 +5,16 @@ from flask import request
 from flask_restx import Resource
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
+from werkzeug.exceptions import Forbidden
 
+from configs import dify_config
 from controllers.common.schema import (
     query_params_from_model,
     query_params_from_request,
     register_response_schema_models,
     register_schema_models,
 )
+from controllers.common.wraps import enforce_rbac_access
 from controllers.console import console_ns
 from controllers.console.agent.app_helpers import resolve_agent_runtime_app_model
 from controllers.console.app.wraps import get_app_model
@@ -179,6 +182,19 @@ def _resolve_agent_id(app_model: App, node_id: str | None) -> str | None:
 
 def _agent_not_bound() -> tuple[dict[str, str], int]:
     return {"code": "agent_not_bound", "message": "no agent is bound for this app/node"}, 400
+
+
+def _require_agent_app_edit(*, tenant_id: str, current_user: Account, app_model: App) -> None:
+    if not dify_config.RBAC_ENABLED and not current_user.has_edit_permission:
+        raise Forbidden()
+
+    enforce_rbac_access(
+        tenant_id=tenant_id,
+        account_id=current_user.id,
+        resource_type=RBACResourceScope.APP,
+        scene=RBACPermission.APP_EDIT,
+        path_args={"app_id": app_model.id},
+    )
 
 
 def _upload_skill_for_app(*, current_user: Account, app_model: App):
@@ -395,6 +411,7 @@ class AgentDriveFilesByAgentApi(Resource):
     @with_current_tenant_id
     def post(self, tenant_id: str, current_user: Account, agent_id: UUID):
         app_model = resolve_agent_runtime_app_model(tenant_id=tenant_id, agent_id=agent_id)
+        _require_agent_app_edit(tenant_id=tenant_id, current_user=current_user, app_model=app_model)
         return _commit_drive_file_for_app(current_user=current_user, app_model=app_model, allow_node_id=False)
 
     @console_ns.doc("delete_agent_drive_file_by_agent")
@@ -408,6 +425,7 @@ class AgentDriveFilesByAgentApi(Resource):
     @with_current_tenant_id
     def delete(self, tenant_id: str, current_user: Account, agent_id: UUID):
         app_model = resolve_agent_runtime_app_model(tenant_id=tenant_id, agent_id=agent_id)
+        _require_agent_app_edit(tenant_id=tenant_id, current_user=current_user, app_model=app_model)
         return _delete_drive_file_for_app(current_user=current_user, app_model=app_model, allow_node_id=False)
 
 

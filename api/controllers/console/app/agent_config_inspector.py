@@ -13,13 +13,16 @@ from uuid import UUID
 from flask import Response, request, send_file, url_for
 from flask_restx import Resource
 from pydantic import BaseModel, Field
+from werkzeug.exceptions import Forbidden
 
+from configs import dify_config
 from controllers.common.schema import (
     query_params_from_model,
     query_params_from_request,
     register_response_schema_models,
     register_schema_models,
 )
+from controllers.common.wraps import enforce_rbac_access
 from controllers.console import console_ns
 from controllers.console.agent.app_helpers import resolve_agent_runtime_app_model
 from controllers.console.app.wraps import get_app_model
@@ -261,6 +264,19 @@ def _agent_not_bound() -> tuple[dict[str, object], int]:
     return {"code": "agent_not_bound", "message": "no agent is bound for this app/node"}, 400
 
 
+def _require_agent_app_edit(*, tenant_id: str, current_user: Account, app_model: App) -> None:
+    if not dify_config.RBAC_ENABLED and not current_user.has_edit_permission:
+        raise Forbidden()
+
+    enforce_rbac_access(
+        tenant_id=tenant_id,
+        account_id=current_user.id,
+        resource_type=RBACResourceScope.APP,
+        scene=RBACPermission.APP_EDIT,
+        path_args={"app_id": app_model.id},
+    )
+
+
 def _handle(exc: AgentConfigServiceError) -> tuple[dict[str, object], int]:
     return {"code": exc.code, "message": exc.message}, exc.status_code
 
@@ -346,8 +362,11 @@ def _resolve_agent_route_target(
     agent_id: UUID,
     current_user: Account,
     query: AgentConfigByAgentQuery,
+    require_app_edit: bool = False,
 ) -> _ResolvedConsoleTarget:
-    resolve_agent_runtime_app_model(tenant_id=tenant_id, agent_id=agent_id)
+    app_model = resolve_agent_runtime_app_model(tenant_id=tenant_id, agent_id=agent_id)
+    if require_app_edit:
+        _require_agent_app_edit(tenant_id=tenant_id, current_user=current_user, app_model=app_model)
     return _resolve_target(
         tenant_id=tenant_id,
         agent_id=str(agent_id),
@@ -381,6 +400,7 @@ def _with_agent_route_target(
     agent_id: UUID,
     current_user: Account,
     action: Callable[[_ResolvedConsoleTarget], Any],
+    require_app_edit: bool = False,
 ) -> Any:
     query = query_params_from_request(AgentConfigByAgentQuery)
     try:
@@ -389,6 +409,7 @@ def _with_agent_route_target(
             agent_id=agent_id,
             current_user=current_user,
             query=query,
+            require_app_edit=require_app_edit,
         )
         return action(target)
     except AgentConfigServiceError as exc:
@@ -783,6 +804,7 @@ class AgentConfigFilesByAgentApi(Resource):
             tenant_id=tenant_id,
             agent_id=agent_id,
             current_user=current_user,
+            require_app_edit=True,
             action=lambda target: _file_upload_response(target, payload),
         )
 
