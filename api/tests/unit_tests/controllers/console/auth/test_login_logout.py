@@ -19,6 +19,8 @@ from werkzeug.exceptions import Unauthorized
 
 from controllers.console.auth.error import (
     AuthenticationFailedError,
+    EmailCodeError,
+    EmailCodeLoginAttemptsLimitError,
     EmailPasswordLoginLimitError,
     InvalidEmailError,
 )
@@ -526,6 +528,129 @@ class TestLoginApi:
                 EmailCodeLoginApi().post()
 
         mock_create_account.assert_called_once()
+
+    @patch("controllers.console.wraps.db")
+    @patch("controllers.console.auth.login.AccountService.is_email_code_login_error_rate_limit")
+    @patch("controllers.console.auth.login.AccountService.get_email_code_login_data")
+    def test_email_code_login_fails_when_rate_limited(
+        self,
+        mock_get_token_data: MagicMock,
+        mock_is_rate_limit: MagicMock,
+        mock_db: MagicMock,
+        app: Flask,
+    ):
+        """
+        Test email-code login rejection once the per-email attempt lockout has tripped.
+
+        Verifies that:
+        - the lockout is checked before any token/code lookup, so a locked-out attacker
+          cannot keep guessing the emailed code by supplying a fresh token
+        - EmailCodeLoginAttemptsLimitError (429) is raised when the limit is exceeded
+        """
+        # Arrange
+        mock_is_rate_limit.return_value = True
+
+        # Act & Assert
+        with app.test_request_context(
+            "/email-code-login/validity",
+            method="POST",
+            json={"email": "User@Example.com", "code": encode_code("123456"), "token": "token-123"},
+        ):
+            with pytest.raises(EmailCodeLoginAttemptsLimitError):
+                EmailCodeLoginApi().post()
+
+        mock_is_rate_limit.assert_called_once_with("user@example.com")
+        mock_get_token_data.assert_not_called()
+
+    @patch("controllers.console.wraps.db")
+    @patch("controllers.console.auth.login.AccountService.is_email_code_login_error_rate_limit")
+    @patch("controllers.console.auth.login.AccountService.add_email_code_login_error_rate_limit")
+    @patch("controllers.console.auth.login.AccountService.get_email_code_login_data")
+    def test_email_code_login_records_failed_attempt_on_wrong_code(
+        self,
+        mock_get_token_data: MagicMock,
+        mock_add_rate_limit: MagicMock,
+        mock_is_rate_limit: MagicMock,
+        mock_db: MagicMock,
+        app: Flask,
+    ):
+        """
+        Test that a wrong email-code guess is counted against the per-email lockout.
+
+        Verifies that:
+        - the pre-check passes when the account is not yet locked out
+        - a wrong guess still raises EmailCodeError (existing behavior) AND now also
+          calls add_email_code_login_error_rate_limit(), so unlimited guessing (this
+          finding's invariant) is no longer possible -- enough wrong guesses will trip
+          is_email_code_login_error_rate_limit() on a later request
+        """
+        # Arrange
+        mock_is_rate_limit.return_value = False
+        mock_get_token_data.return_value = {"email": "User@Example.com", "code": "123456"}
+
+        # Act & Assert
+        with app.test_request_context(
+            "/email-code-login/validity",
+            method="POST",
+            json={"email": "User@Example.com", "code": encode_code("000000"), "token": "token-123"},
+        ):
+            with pytest.raises(EmailCodeError):
+                EmailCodeLoginApi().post()
+
+        mock_add_rate_limit.assert_called_once_with("user@example.com")
+
+    @patch("controllers.console.wraps.db")
+    @patch("controllers.console.auth.login.db")
+    @patch("controllers.console.auth.login.AccountService.is_email_code_login_error_rate_limit")
+    @patch("controllers.console.auth.login.AccountService.reset_email_code_login_error_rate_limit")
+    @patch("controllers.console.auth.login.AccountService.reset_login_error_rate_limit")
+    @patch("controllers.console.auth.login.AccountService.login")
+    @patch("controllers.console.auth.login.TenantService.get_join_tenants")
+    @patch("controllers.console.auth.login.AccountService.get_email_code_login_data")
+    @patch("controllers.console.auth.login.AccountService.revoke_email_code_login_token")
+    @patch("controllers.console.auth.login._get_account_with_case_fallback")
+    def test_email_code_login_resets_rate_limit_on_success(
+        self,
+        mock_get_account: MagicMock,
+        mock_revoke_token: MagicMock,
+        mock_get_token_data: MagicMock,
+        mock_get_tenants: MagicMock,
+        mock_login_service: MagicMock,
+        mock_reset_login_rate_limit: MagicMock,
+        mock_reset_code_rate_limit: MagicMock,
+        mock_is_rate_limit: MagicMock,
+        mock_login_db: MagicMock,
+        mock_db: MagicMock,
+        app: Flask,
+        mock_account,
+        mock_token_pair,
+    ):
+        """
+        Test that a correct email-code guess clears the per-email attempt lockout.
+
+        Verifies that reset_email_code_login_error_rate_limit() runs alongside the
+        existing reset_login_error_rate_limit() once the code is verified and login
+        succeeds, so a legitimate user isn't left locked out after finally entering
+        the right code.
+        """
+        # Arrange
+        mock_is_rate_limit.return_value = False
+        mock_get_token_data.return_value = {"email": "User@Example.com", "code": "123456"}
+        mock_get_account.return_value = mock_account
+        mock_get_tenants.return_value = [MagicMock()]
+        mock_login_service.return_value = mock_token_pair
+
+        # Act
+        with app.test_request_context(
+            "/email-code-login/validity",
+            method="POST",
+            json={"email": "User@Example.com", "code": encode_code("123456"), "token": "token-123"},
+        ):
+            response = EmailCodeLoginApi().post()
+
+        # Assert
+        assert response.json["result"] == "success"
+        mock_reset_code_rate_limit.assert_called_once_with("user@example.com")
 
 
 class TestLogoutApi:

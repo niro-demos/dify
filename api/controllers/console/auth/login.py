@@ -20,6 +20,7 @@ from controllers.console import console_ns
 from controllers.console.auth.error import (
     AuthenticationFailedError,
     EmailCodeError,
+    EmailCodeLoginAttemptsLimitError,
     EmailPasswordLoginLimitError,
     InvalidEmailError,
     InvalidTokenError,
@@ -282,6 +283,12 @@ class EmailCodeLoginApi(Resource):
         user_email = original_email.lower()
         language = args.language
 
+        # Key the lockout by normalized email (not just token) so an attacker cannot
+        # bypass it by re-requesting a fresh token/code for the same address.
+        if AccountService.is_email_code_login_error_rate_limit(user_email):
+            _log_console_login_failure(email=user_email, reason=LoginFailureReason.LOGIN_RATE_LIMITED)
+            raise EmailCodeLoginAttemptsLimitError()
+
         token_data = AccountService.get_email_code_login_data(args.token)
         if token_data is None:
             _log_console_login_failure(email=user_email, reason=LoginFailureReason.INVALID_EMAIL_CODE_TOKEN)
@@ -294,6 +301,7 @@ class EmailCodeLoginApi(Resource):
             raise InvalidEmailError()
 
         if token_data["code"] != args.code:
+            AccountService.add_email_code_login_error_rate_limit(user_email)
             _log_console_login_failure(email=user_email, reason=LoginFailureReason.INVALID_EMAIL_CODE)
             raise EmailCodeError()
 
@@ -340,6 +348,7 @@ class EmailCodeLoginApi(Resource):
                 raise WorkspacesLimitExceeded()
         token_pair = AccountService.login(account, session=db.session(), ip_address=extract_remote_ip(request))
         AccountService.reset_login_error_rate_limit(user_email)
+        AccountService.reset_email_code_login_error_rate_limit(user_email)
 
         # Create response with cookies instead of returning tokens in body
         # response-contract:ignore cookie-bearing Flask response

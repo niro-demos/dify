@@ -161,6 +161,7 @@ class AccountService:
     CHANGE_EMAIL_MAX_ERROR_LIMITS = 5
     OWNER_TRANSFER_MAX_ERROR_LIMITS = 5
     EMAIL_REGISTER_MAX_ERROR_LIMITS = 5
+    EMAIL_CODE_LOGIN_MAX_ERROR_LIMITS = 5
 
     @staticmethod
     def _resolve_legacy_role_id(tenant_id: str, account_id: str, role: TenantAccountRole) -> str:
@@ -1124,6 +1125,35 @@ class AccountService:
     @redis_fallback(default_return=None)
     def reset_forgot_password_error_rate_limit(email: str):
         key = f"forgot_password_error_rate_limit:{email}"
+        redis_client.delete(key)
+
+    @staticmethod
+    @redis_fallback(default_return=None)
+    def add_email_code_login_error_rate_limit(email: str):
+        key = f"email_code_login_error_rate_limit:{email}"
+        count = redis_client.get(key)
+        if count is None:
+            count = 0
+        count = int(count) + 1
+        redis_client.setex(key, dify_config.EMAIL_CODE_LOGIN_LOCKOUT_DURATION, count)
+
+    @staticmethod
+    @redis_fallback(default_return=False)
+    def is_email_code_login_error_rate_limit(email: str) -> bool:
+        key = f"email_code_login_error_rate_limit:{email}"
+        count = redis_client.get(key)
+        if count is None:
+            return False
+
+        count = int(count)
+        if count > AccountService.EMAIL_CODE_LOGIN_MAX_ERROR_LIMITS:
+            return True
+        return False
+
+    @staticmethod
+    @redis_fallback(default_return=None)
+    def reset_email_code_login_error_rate_limit(email: str):
+        key = f"email_code_login_error_rate_limit:{email}"
         redis_client.delete(key)
 
     @staticmethod

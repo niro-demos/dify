@@ -127,6 +127,12 @@ class EmailChangeLimitError(BaseHTTPException):
     code = 429
 
 
+class EmailCodeLoginAttemptsLimitError(BaseHTTPException):
+    error_code = "email_code_login_attempts_limit"
+    description = "Too many failed email code login attempts. Please try again in 24 hours."
+    code = 429
+
+
 class EmailAlreadyInUseError(BaseHTTPException):
     error_code = "email_already_in_use"
     description = "A user with this email already exists."
