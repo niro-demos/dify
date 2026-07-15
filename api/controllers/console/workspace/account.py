@@ -723,12 +723,6 @@ class ChangeEmailResetApi(Resource):
         args = ChangeEmailResetPayload.model_validate(payload)
         normalized_new_email = args.new_email.lower()
 
-        if AccountService.is_account_in_freeze(normalized_new_email):
-            raise AccountInFreezeError()
-
-        if not AccountService.check_email_unique(normalized_new_email, session=db.session()):
-            raise EmailAlreadyInUseError()
-
         reset_data = AccountService.get_change_email_data(args.token)
         if not reset_data:
             raise InvalidTokenError()
@@ -745,6 +739,17 @@ class ChangeEmailResetApi(Resource):
 
         if current_user.email.lower() != reset_data.old_email.lower():
             raise AccountNotFound()
+
+        # Only disclose whether `normalized_new_email` is already registered
+        # once the caller has proven ownership of it via a verified emailed
+        # code/token (the checks above). Running this check earlier would let
+        # an authenticated caller enumerate arbitrary emails' registration
+        # status using junk tokens (TC-37DAFD49).
+        if AccountService.is_account_in_freeze(normalized_new_email):
+            raise AccountInFreezeError()
+
+        if not AccountService.check_email_unique(normalized_new_email, session=db.session()):
+            raise EmailAlreadyInUseError()
 
         # Revoke only after all checks pass so failed attempts don't burn a
         # legitimately verified token.
@@ -770,8 +775,19 @@ class CheckEmailUnique(Resource):
         payload = console_ns.payload or {}
         args = CheckEmailUniquePayload.model_validate(payload)
         normalized_email = args.email.lower()
+
+        # This endpoint is reachable by anonymous callers, so, like the
+        # sibling /forgot-password and /email-register/send-email endpoints,
+        # it must not disclose whether `normalized_email` already has a
+        # registered account: doing so lets an anonymous attacker enumerate
+        # accounts (TC-37DAFD49). The authoritative already-in-use check runs
+        # later, in ChangeEmailResetApi, only after the caller has proven
+        # ownership of the new email via a verified emailed code/token.
+        ip_address = extract_remote_ip(request)
+        if AccountService.is_email_send_ip_limit(ip_address):
+            raise EmailSendIpLimitError()
+
         if AccountService.is_account_in_freeze(normalized_email):
             raise AccountInFreezeError()
-        if not AccountService.check_email_unique(normalized_email, session=db.session()):
-            raise EmailAlreadyInUseError()
+
         return SimpleResultResponse(result="success").model_dump(mode="json")

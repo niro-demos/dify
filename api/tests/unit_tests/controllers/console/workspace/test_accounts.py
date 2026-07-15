@@ -9,8 +9,9 @@ from controllers.console import console_ns
 from controllers.console.auth.error import (
     EmailAlreadyInUseError,
     EmailCodeError,
+    InvalidTokenError,
 )
-from controllers.console.error import AccountInFreezeError
+from controllers.console.error import AccountInFreezeError, EmailSendIpLimitError
 from controllers.console.workspace.account import (
     AccountAvatarApi,
     AccountDeleteApi,
@@ -35,6 +36,7 @@ from controllers.console.workspace.error import (
 from models import Account
 from models.account import AccountStatus
 from models.enums import CreatorUserRole
+from services.entities.auth_entities import ChangeEmailNewEmailVerifiedToken
 from services.errors.account import CurrentPasswordIncorrectError as ServicePwdError
 
 
@@ -360,10 +362,48 @@ class TestChangeEmailApis:
                 method(api, user)
 
     def test_reset_email_already_used(self, app: Flask):
+        """The already-in-use check still blocks the mutation, but only once
+        ownership of the new email has been verified via the emailed
+        code/token (TC-37DAFD49 remediation)."""
         api = ChangeEmailResetApi()
         method = inspect.unwrap(api.post)
 
         payload = {"new_email": "x@test.com", "token": "t"}
+        user = make_account()
+        verified_token = ChangeEmailNewEmailVerifiedToken(
+            account_id=user.id,
+            email="x@test.com",
+            old_email=user.email,
+            code="1234",
+        )
+
+        with (
+            app.test_request_context("/", json=payload),
+            patch.object(
+                type(console_ns),
+                "payload",
+                new_callable=PropertyMock,
+                return_value=payload,
+            ),
+            patch(
+                "controllers.console.workspace.account.AccountService.get_change_email_data",
+                return_value=verified_token,
+            ),
+            patch("controllers.console.workspace.account.AccountService.is_account_in_freeze", return_value=False),
+            patch("controllers.console.workspace.account.AccountService.check_email_unique", return_value=False),
+        ):
+            with pytest.raises(EmailAlreadyInUseError):
+                method(api, user)
+
+    def test_reset_does_not_leak_email_uniqueness_before_token_verified(self, app: Flask):
+        """TC-37DAFD49: an authenticated caller with a junk/invalid token must
+        not be able to learn whether `new_email` is already registered --
+        the already-in-use check must run only after the token is confirmed
+        bound to this account and to `new_email`, not before."""
+        api = ChangeEmailResetApi()
+        method = inspect.unwrap(api.post)
+
+        payload = {"new_email": "somebody-else@test.com", "token": "junk-token"}
         user = make_account()
 
         with (
@@ -374,11 +414,14 @@ class TestChangeEmailApis:
                 new_callable=PropertyMock,
                 return_value=payload,
             ),
+            patch("controllers.console.workspace.account.AccountService.get_change_email_data", return_value=None),
             patch("controllers.console.workspace.account.AccountService.is_account_in_freeze", return_value=False),
-            patch("controllers.console.workspace.account.AccountService.check_email_unique", return_value=False),
+            patch("controllers.console.workspace.account.AccountService.check_email_unique") as mock_check_unique,
         ):
-            with pytest.raises(EmailAlreadyInUseError):
+            with pytest.raises(InvalidTokenError):
                 method(api, user)
+
+        mock_check_unique.assert_not_called()
 
 
 class TestCheckEmailUniqueApi:
@@ -420,4 +463,64 @@ class TestCheckEmailUniqueApi:
             patch("controllers.console.workspace.account.AccountService.is_account_in_freeze", return_value=True),
         ):
             with pytest.raises(AccountInFreezeError):
+                method(api)
+
+    def _call_check_email_unique(self, app: Flask, email: str, *, is_registered: bool) -> dict:
+        api = CheckEmailUnique()
+        method = inspect.unwrap(api.post)
+
+        payload = {"email": email}
+
+        with (
+            app.test_request_context("/", json=payload),
+            patch.object(
+                type(console_ns),
+                "payload",
+                new_callable=PropertyMock,
+                return_value=payload,
+            ),
+            patch("controllers.console.workspace.account.extract_remote_ip", return_value="203.0.113.1"),
+            patch("controllers.console.workspace.account.AccountService.is_email_send_ip_limit", return_value=False),
+            patch("controllers.console.workspace.account.AccountService.is_account_in_freeze", return_value=False),
+            patch(
+                "controllers.console.workspace.account.AccountService.check_email_unique",
+                return_value=not is_registered,
+            ),
+        ):
+            return method(api)
+
+    def test_anonymous_caller_cannot_distinguish_registered_email(self, app: Flask):
+        """TC-37DAFD49: an anonymous caller must get the same generic success
+        response for a registered address as for an unregistered one -- the
+        authoritative already-in-use check now lives only in
+        ChangeEmailResetApi, after ownership of the new email is verified."""
+        registered_response = self._call_check_email_unique(app, "owner-a@niro.test", is_registered=True)
+        unregistered_response = self._call_check_email_unique(
+            app, "totally-fake-user-abc123@niro.test", is_registered=False
+        )
+
+        assert registered_response == unregistered_response == {"result": "success"}
+
+    def test_rate_limited_by_source_ip(self, app: Flask):
+        """The endpoint must apply the same per-IP rate limit used by the
+        sibling /forgot-password and /email-register/send-email endpoints."""
+        api = CheckEmailUnique()
+        method = inspect.unwrap(api.post)
+
+        payload = {"email": "x@test.com"}
+
+        with (
+            app.test_request_context("/", json=payload),
+            patch.object(
+                type(console_ns),
+                "payload",
+                new_callable=PropertyMock,
+                return_value=payload,
+            ),
+            patch("controllers.console.workspace.account.extract_remote_ip", return_value="203.0.113.1"),
+            patch("controllers.console.workspace.account.AccountService.is_email_send_ip_limit", return_value=True),
+            patch("controllers.console.workspace.account.AccountService.is_account_in_freeze", return_value=False),
+            patch("controllers.console.workspace.account.AccountService.check_email_unique", return_value=True),
+        ):
+            with pytest.raises(EmailSendIpLimitError):
                 method(api)

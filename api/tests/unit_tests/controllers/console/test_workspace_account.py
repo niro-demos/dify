@@ -665,9 +665,17 @@ class TestAccountDeletionFeedback:
 class TestCheckEmailUnique:
     @patch("controllers.console.workspace.account.AccountService.check_email_unique")
     @patch("controllers.console.workspace.account.AccountService.is_account_in_freeze")
-    def test_should_normalize_email(self, mock_is_freeze: MagicMock, mock_check_unique: MagicMock, app: Flask):
+    @patch("controllers.console.workspace.account.AccountService.is_email_send_ip_limit", return_value=False)
+    @patch("controllers.console.workspace.account.extract_remote_ip", return_value="127.0.0.1")
+    def test_should_normalize_email(
+        self,
+        mock_extract_ip: MagicMock,
+        mock_is_ip_limit: MagicMock,
+        mock_is_freeze: MagicMock,
+        mock_check_unique: MagicMock,
+        app: Flask,
+    ):
         mock_is_freeze.return_value = False
-        mock_check_unique.return_value = True
 
         with app.test_request_context(
             "/account/change-email/check-email-unique",
@@ -679,8 +687,66 @@ class TestCheckEmailUnique:
             response = method(api)
 
         assert response == {"result": "success"}
+        mock_is_ip_limit.assert_called_once_with("127.0.0.1")
         mock_is_freeze.assert_called_once_with("case@test.com")
-        mock_check_unique.assert_called_once_with("case@test.com", session=ANY)
+        # TC-37DAFD49: this endpoint must not disclose whether the email is
+        # already registered, so it no longer calls check_email_unique at all.
+        mock_check_unique.assert_not_called()
+
+    @patch("controllers.console.workspace.account.AccountService.check_email_unique")
+    @patch("controllers.console.workspace.account.AccountService.is_account_in_freeze")
+    @patch("controllers.console.workspace.account.AccountService.is_email_send_ip_limit", return_value=True)
+    @patch("controllers.console.workspace.account.extract_remote_ip", return_value="203.0.113.1")
+    def test_should_reject_when_source_ip_is_rate_limited(
+        self,
+        mock_extract_ip: MagicMock,
+        mock_is_ip_limit: MagicMock,
+        mock_is_freeze: MagicMock,
+        mock_check_unique: MagicMock,
+        app: Flask,
+    ):
+        from controllers.console.error import EmailSendIpLimitError
+
+        with app.test_request_context(
+            "/account/change-email/check-email-unique",
+            method="POST",
+            json={"email": "case@test.com"},
+        ):
+            api = CheckEmailUnique()
+            method = inspect.unwrap(api.post)
+            with pytest.raises(EmailSendIpLimitError):
+                method(api)
+
+        mock_is_freeze.assert_not_called()
+        mock_check_unique.assert_not_called()
+
+    @patch("controllers.console.workspace.account.AccountService.check_email_unique")
+    @patch("controllers.console.workspace.account.AccountService.is_account_in_freeze", return_value=False)
+    @patch("controllers.console.workspace.account.AccountService.is_email_send_ip_limit", return_value=False)
+    @patch("controllers.console.workspace.account.extract_remote_ip", return_value="127.0.0.1")
+    def test_registered_and_unregistered_emails_are_indistinguishable(
+        self,
+        mock_extract_ip: MagicMock,
+        mock_is_ip_limit: MagicMock,
+        mock_is_freeze: MagicMock,
+        mock_check_unique: MagicMock,
+        app: Flask,
+    ):
+        """TC-37DAFD49: an anonymous caller must receive the same generic
+        success response whether or not the email is already registered."""
+        responses = []
+        for email, already_registered in (("owner@test.com", True), ("nobody@test.com", False)):
+            mock_check_unique.return_value = not already_registered
+            with app.test_request_context(
+                "/account/change-email/check-email-unique",
+                method="POST",
+                json={"email": email},
+            ):
+                api = CheckEmailUnique()
+                method = inspect.unwrap(api.post)
+                responses.append(method(api))
+
+        assert responses[0] == responses[1] == {"result": "success"}
 
 
 def test_get_account_by_email_with_case_fallback_uses_lowercase_lookup():
