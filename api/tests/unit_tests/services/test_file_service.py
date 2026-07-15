@@ -318,6 +318,7 @@ class TestFileService:
     def test_get_public_image_preview_success(self, file_service: FileService, mock_db_session):
         upload_file = MagicMock(spec=UploadFile)
         upload_file.id = "file_id"
+        upload_file.tenant_id = "tenant-a"
         upload_file.extension = "png"
         upload_file.mime_type = "image/png"
         upload_file.key = "key"
@@ -325,22 +326,52 @@ class TestFileService:
 
         with patch("services.file_service.storage") as mock_storage:
             mock_storage.load.return_value = b"image content"
-            gen, mime = file_service.get_public_image_preview("file_id")
+            gen, mime = file_service.get_public_image_preview("file_id", "tenant-a")
             assert gen == b"image content"
             assert mime == "image/png"
 
     def test_get_public_image_preview_not_found(self, file_service: FileService, mock_db_session):
         mock_db_session.scalar.return_value = None
         with pytest.raises(NotFound, match="File not found or signature is invalid"):
-            file_service.get_public_image_preview("file_id")
+            file_service.get_public_image_preview("file_id", "tenant-a")
 
     def test_get_public_image_preview_unsupported_type(self, file_service: FileService, mock_db_session):
         upload_file = MagicMock(spec=UploadFile)
         upload_file.id = "file_id"
+        upload_file.tenant_id = "tenant-a"
         upload_file.extension = "txt"
         mock_db_session.scalar.return_value = upload_file
         with pytest.raises(UnsupportedFileTypeError):
-            file_service.get_public_image_preview("file_id")
+            file_service.get_public_image_preview("file_id", "tenant-a")
+
+    def test_get_public_image_preview_cross_tenant_file_is_not_found(self, file_service: FileService, mock_db_session):
+        """Regression test for TC-2D74D6EE.
+
+        Invariant: the public webapp-logo preview must never return a file's
+        content when the file's tenant_id does not match the workspace_id
+        (tenant_id) in the request path -- a cross-tenant file id must behave
+        exactly like a missing file (404), not like a successful preview.
+        """
+        upload_file = MagicMock(spec=UploadFile)
+        upload_file.id = "victim-file-id"
+        upload_file.tenant_id = "tenant-victim"
+        upload_file.extension = "svg"
+        upload_file.mime_type = "image/svg+xml"
+        upload_file.key = "key"
+        mock_db_session.scalar.return_value = upload_file
+
+        with patch("services.file_service.storage") as mock_storage:
+            mock_storage.load.return_value = b"<svg>victim content</svg>"
+
+            # Positive control: same tenant succeeds, proving the lookup path itself is healthy.
+            gen, mime = file_service.get_public_image_preview("victim-file-id", "tenant-victim")
+            assert gen == b"<svg>victim content</svg>"
+            assert mime == "image/svg+xml"
+
+            # The actual invariant: a different tenant_id must not see this file's content.
+            with pytest.raises(NotFound, match="File not found or signature is invalid"):
+                file_service.get_public_image_preview("victim-file-id", "tenant-attacker")
+            mock_storage.load.assert_called_once()
 
     def test_get_file_content_success(self, file_service: FileService, mock_db_session):
         upload_file = MagicMock(spec=UploadFile)

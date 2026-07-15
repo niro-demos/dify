@@ -229,11 +229,15 @@ class FileService:
 
         return generator, upload_file
 
-    def get_public_image_preview(self, file_id: str):
+    def get_public_image_preview(self, file_id: str, tenant_id: str):
         with self._session_maker(expire_on_commit=False) as session:
             upload_file = session.scalar(select(UploadFile).where(UploadFile.id == file_id).limit(1))
 
-        if not upload_file:
+        # A missing file and a file owned by a different tenant must be
+        # indistinguishable to the caller: both are "not found" for this
+        # tenant_id, so this endpoint never confirms cross-tenant file ids
+        # or leaks another tenant's uploaded content.
+        if not upload_file or upload_file.tenant_id != tenant_id:
             raise NotFound("File not found or signature is invalid")
 
         # extract text from file

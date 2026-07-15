@@ -180,6 +180,11 @@ class TestWorkspaceWebappLogoApi:
         response = get_fn("workspace-id")
 
         assert response.mimetype == "image/png"
+        assert response.headers.get("X-Content-Type-Options") == "nosniff"
+        # Regression guard for TC-2D74D6EE: the resolved workspace_id must be
+        # forwarded to the service so it can enforce tenant ownership -- a
+        # call with only the file id can never reject a cross-tenant file.
+        mock_file_service.return_value.get_public_image_preview.assert_called_once_with("logo-id", "workspace-id")
 
     @patch.object(module.TenantService, "get_custom_config")
     def test_logo_not_configured(self, mock_config):

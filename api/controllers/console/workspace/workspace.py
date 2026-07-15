@@ -13,6 +13,7 @@ from configs import dify_config
 from controllers.common.errors import (
     FilenameNotExistsError,
     FileTooLargeError,
+    InvalidArgumentError,
     NoFileUploadedError,
     TooManyFilesError,
     UnsupportedFileTypeError,
@@ -29,6 +30,7 @@ from controllers.console.error import AccountNotLinkTenantError
 from controllers.console.wraps import (
     account_initialization_required,
     cloud_edition_billing_resource_check,
+    is_admin_or_owner_required,
     only_edition_enterprise,
     setup_required,
     with_current_tenant_id,
@@ -354,6 +356,7 @@ class CustomConfigWorkspaceApi(Resource):
     @console_ns.response(HTTPStatus.OK, "Success", console_ns.models[WorkspaceTenantResultResponse.__name__])
     @setup_required
     @login_required
+    @is_admin_or_owner_required
     @account_initialization_required
     @cloud_edition_billing_resource_check("workspace_custom")
     @with_current_tenant_id
@@ -361,6 +364,15 @@ class CustomConfigWorkspaceApi(Resource):
         payload = console_ns.payload or {}
         args = WorkspaceCustomConfigPayload.model_validate(payload)
         tenant = db.get_or_404(Tenant, current_tenant_id)
+
+        if args.replace_webapp_logo:
+            owned_upload_files = FileService.get_upload_files_by_ids(
+                current_tenant_id, [args.replace_webapp_logo], session=db.session()
+            )
+            if args.replace_webapp_logo not in owned_upload_files:
+                raise InvalidArgumentError(
+                    "replace_webapp_logo must reference a file uploaded to the current workspace"
+                )
 
         custom_config_dict: TenantCustomConfigDict = {
             "remove_webapp_brand": args.remove_webapp_brand
@@ -385,6 +397,7 @@ class WebappLogoWorkspaceApi(Resource):
     @console_ns.response(HTTPStatus.CREATED, "Logo uploaded", console_ns.models[WorkspaceLogoUploadResponse.__name__])
     @setup_required
     @login_required
+    @is_admin_or_owner_required
     @account_initialization_required
     @cloud_edition_billing_resource_check("workspace_custom")
     @with_current_user
@@ -427,6 +440,7 @@ class WorkspaceInfoApi(Resource):
     @console_ns.response(HTTPStatus.OK, "Success", console_ns.models[WorkspaceTenantResultResponse.__name__])
     @setup_required
     @login_required
+    @is_admin_or_owner_required
     @account_initialization_required
     # Change workspace name
     @with_current_tenant_id

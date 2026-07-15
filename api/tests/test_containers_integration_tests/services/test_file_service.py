@@ -781,7 +781,9 @@ class TestFileService:
 
         db_session_with_containers.commit()
 
-        generator, mime_type = FileService(engine).get_public_image_preview(file_id=upload_file.id)
+        generator, mime_type = FileService(engine).get_public_image_preview(
+            file_id=upload_file.id, tenant_id=upload_file.tenant_id
+        )
 
         assert generator is not None
         assert mime_type == upload_file.mime_type
@@ -797,7 +799,7 @@ class TestFileService:
         non_existent_id = str(fake.uuid4())
 
         with pytest.raises(NotFound, match="File not found or signature is invalid"):
-            FileService(engine).get_public_image_preview(file_id=non_existent_id)
+            FileService(engine).get_public_image_preview(file_id=non_existent_id, tenant_id=str(fake.uuid4()))
 
     def test_get_public_image_preview_unsupported_file_type(
         self, db_session_with_containers: Session, engine, mock_external_service_dependencies
@@ -817,7 +819,28 @@ class TestFileService:
         db_session_with_containers.commit()
 
         with pytest.raises(UnsupportedFileTypeError):
-            FileService(engine).get_public_image_preview(file_id=upload_file.id)
+            FileService(engine).get_public_image_preview(file_id=upload_file.id, tenant_id=upload_file.tenant_id)
+
+    def test_get_public_image_preview_cross_tenant_file_returns_not_found(
+        self, db_session_with_containers: Session, engine, mock_external_service_dependencies
+    ):
+        """
+        Regression test for TC-2D74D6EE: a file uploaded by one tenant must not be
+        servable via another tenant's workspace_id path parameter.
+        """
+        fake = Faker()
+        account = self._create_test_account(db_session_with_containers, mock_external_service_dependencies)
+        upload_file = self._create_test_upload_file(
+            db_session_with_containers, mock_external_service_dependencies, account
+        )
+        upload_file.extension = "jpg"
+        db_session_with_containers.commit()
+
+        other_tenant_id = str(fake.uuid4())
+        assert other_tenant_id != upload_file.tenant_id
+
+        with pytest.raises(NotFound, match="File not found or signature is invalid"):
+            FileService(engine).get_public_image_preview(file_id=upload_file.id, tenant_id=other_tenant_id)
 
     # Test edge cases and boundary conditions
     def test_upload_file_empty_content(

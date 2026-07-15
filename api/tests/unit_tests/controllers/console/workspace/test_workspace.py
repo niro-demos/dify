@@ -2,21 +2,24 @@ import inspect
 import logging
 from http import HTTPStatus
 from io import BytesIO
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 from flask import Flask
 from werkzeug.datastructures import FileStorage
-from werkzeug.exceptions import Unauthorized
+from werkzeug.exceptions import Forbidden, Unauthorized
 
+import libs.login as login_module
 import services
 from controllers.common.errors import (
     FilenameNotExistsError,
     FileTooLargeError,
+    InvalidArgumentError,
     NoFileUploadedError,
     TooManyFilesError,
     UnsupportedFileTypeError,
 )
+from controllers.console import wraps as wraps_module
 from controllers.console.error import AccountNotLinkTenantError
 from controllers.console.workspace.workspace import (
     CustomConfigWorkspaceApi,
@@ -33,7 +36,7 @@ from controllers.console.workspace.workspace import (
 )
 from enums.cloud_plan import CloudPlan
 from libs.datetime_utils import naive_utc_now
-from models.account import Account, Tenant, TenantCustomConfigDict, TenantStatus
+from models.account import Account, Tenant, TenantAccountRole, TenantCustomConfigDict, TenantStatus
 
 
 def make_account(account_id: str = "u1") -> Account:
@@ -67,6 +70,25 @@ def make_account_with_tenant(tenant: Tenant) -> Account:
     account = make_account()
     account._current_tenant = tenant
     return account
+
+
+def _login_as(monkeypatch: pytest.MonkeyPatch, account: Account) -> None:
+    """Make `account` the resolved current_user for the full decorator chain.
+
+    Exercises the real setup_required/login_required/is_admin_or_owner_required/
+    account_initialization_required stack (unlike the `inspect.unwrap` helpers
+    used elsewhere in this file, which bypass all decorators to isolate
+    business logic) so tests can prove the role gate itself is wired up.
+    """
+    monkeypatch.setattr(login_module, "_get_user", lambda: account)
+    monkeypatch.setattr(login_module, "check_csrf_token", lambda *args, **kwargs: None)
+    monkeypatch.setattr(wraps_module.dify_config, "EDITION", "CLOUD")
+    monkeypatch.setattr(wraps_module.dify_config, "RBAC_ENABLED", False)
+    monkeypatch.setattr(
+        wraps_module.FeatureService,
+        "get_features",
+        lambda *args, **kwargs: MagicMock(billing=MagicMock(enabled=False)),
+    )
 
 
 class TestTenantListApi:
@@ -526,6 +548,68 @@ class TestCustomConfigWorkspaceApi:
         assert tenant.custom_config_dict["replace_webapp_logo"] == "old-logo"
         assert result["result"] == "success"
 
+    def test_replace_webapp_logo_rejects_cross_tenant_file(self, app: Flask):
+        """Regression test for TC-2D74D6EE (write-time half of the fix).
+
+        Invariant: a workspace's custom-config can only ever be pointed at an
+        UploadFile that belongs to that same tenant -- a cross-tenant file id
+        must be rejected at write time, before it can ever be stored and
+        served back through the public webapp-logo endpoint.
+        """
+        api = CustomConfigWorkspaceApi()
+        method = inspect.unwrap(api.post)
+
+        tenant = make_tenant("t1", custom_config={})
+
+        payload = {"replace_webapp_logo": "victim-file-id"}
+
+        with (
+            app.test_request_context("/workspaces/custom-config", json=payload),
+            patch("controllers.console.workspace.workspace.db.get_or_404", return_value=tenant),
+            patch("controllers.console.workspace.workspace.db.session.commit"),
+            patch(
+                "controllers.console.workspace.workspace.WorkspaceService.get_tenant_info",
+                return_value={"id": "t1"},
+            ),
+            patch(
+                "controllers.console.workspace.workspace.FileService.get_upload_files_by_ids",
+                return_value={},
+            ) as get_files_mock,
+        ):
+            with pytest.raises(InvalidArgumentError):
+                method(api, "t1")
+
+        get_files_mock.assert_called_once_with("t1", ["victim-file-id"], session=ANY)
+        # The tenant's stored config must be untouched by the rejected write.
+        assert tenant.custom_config_dict.get("replace_webapp_logo") is None
+
+    def test_replace_webapp_logo_accepts_own_tenant_file(self, app: Flask):
+        """Positive control for the above: a file the tenant actually owns is still accepted."""
+        api = CustomConfigWorkspaceApi()
+        method = inspect.unwrap(api.post)
+
+        tenant = make_tenant("t1", custom_config={})
+
+        payload = {"replace_webapp_logo": "own-file-id"}
+
+        with (
+            app.test_request_context("/workspaces/custom-config", json=payload),
+            patch("controllers.console.workspace.workspace.db.get_or_404", return_value=tenant),
+            patch("controllers.console.workspace.workspace.db.session.commit"),
+            patch(
+                "controllers.console.workspace.workspace.FileService.get_upload_files_by_ids",
+                return_value={"own-file-id": MagicMock()},
+            ),
+            patch(
+                "controllers.console.workspace.workspace.WorkspaceService.get_tenant_info",
+                return_value={"id": "t1"},
+            ),
+        ):
+            result = method(api, "t1")
+
+        assert result["result"] == "success"
+        assert tenant.custom_config_dict["replace_webapp_logo"] == "own-file-id"
+
 
 class TestWebappLogoWorkspaceApi:
     def test_no_file(self, app: Flask):
@@ -736,3 +820,159 @@ class TestWorkspacePermissionApi:
         with app.test_request_context("/permission"):
             with pytest.raises(ValueError):
                 method(api, None)
+
+
+class TestWorkspaceAdminOnlyGate:
+    """Regression coverage for TC-54310F98.
+
+    Invariant: renaming the workspace, changing its shared custom-config, or
+    replacing its webapp logo are owner/admin-only actions. A dataset_operator
+    (the lowest-privilege workspace role) must be rejected with 403 before any
+    tenant-wide state is mutated.
+
+    Unlike the other tests in this file, these call the decorated `.post`
+    directly (not `inspect.unwrap`-ed) so the real setup_required /
+    login_required / is_admin_or_owner_required / account_initialization_required
+    chain actually runs -- that chain is exactly what the vulnerability was
+    missing.
+    """
+
+    def test_dataset_operator_cannot_rename_workspace(self, app: Flask, monkeypatch: pytest.MonkeyPatch):
+        tenant = make_tenant("t1")
+        operator = make_account_with_tenant(tenant)
+        operator.role = TenantAccountRole.DATASET_OPERATOR
+        _login_as(monkeypatch, operator)
+
+        api = WorkspaceInfoApi()
+        with (
+            app.test_request_context("/workspaces/info", method="POST", json={"name": "PWNED"}),
+            # Mirror the owner-success control's mocking so that, on unfixed code, the
+            # request would otherwise cleanly succeed (200) instead of the assertion
+            # failure being masked by an unrelated unmocked-dependency crash.
+            patch("controllers.console.workspace.workspace.db.get_or_404", return_value=tenant),
+            patch("controllers.console.workspace.workspace.db.session.commit"),
+            patch(
+                "controllers.console.workspace.workspace.WorkspaceService.get_tenant_info",
+                return_value={"id": "t1", "name": "PWNED"},
+            ),
+        ):
+            with pytest.raises(Forbidden):
+                api.post()
+
+        assert tenant.name != "PWNED"
+
+    def test_owner_can_rename_workspace(self, app: Flask, monkeypatch: pytest.MonkeyPatch):
+        """Positive control: the fix must not block the role it's meant to allow."""
+        tenant = make_tenant("t1")
+        owner = make_account_with_tenant(tenant)
+        owner.role = TenantAccountRole.OWNER
+        _login_as(monkeypatch, owner)
+
+        api = WorkspaceInfoApi()
+        with (
+            app.test_request_context("/workspaces/info", method="POST", json={"name": "New Name"}),
+            patch("controllers.console.workspace.workspace.db.get_or_404", return_value=tenant),
+            patch("controllers.console.workspace.workspace.db.session.commit"),
+            patch(
+                "controllers.console.workspace.workspace.WorkspaceService.get_tenant_info",
+                return_value={"id": "t1", "name": "New Name"},
+            ),
+        ):
+            result = api.post()
+
+        assert result["result"] == "success"
+
+    def test_dataset_operator_cannot_change_custom_config(self, app: Flask, monkeypatch: pytest.MonkeyPatch):
+        tenant = make_tenant("t1", custom_config={})
+        operator = make_account_with_tenant(tenant)
+        operator.role = TenantAccountRole.DATASET_OPERATOR
+        _login_as(monkeypatch, operator)
+
+        api = CustomConfigWorkspaceApi()
+        with (
+            app.test_request_context("/workspaces/custom-config", method="POST", json={"remove_webapp_brand": True}),
+            patch("controllers.console.workspace.workspace.db.get_or_404", return_value=tenant),
+            patch("controllers.console.workspace.workspace.db.session.commit"),
+            patch(
+                "controllers.console.workspace.workspace.WorkspaceService.get_tenant_info",
+                return_value={"id": "t1"},
+            ),
+        ):
+            with pytest.raises(Forbidden):
+                api.post()
+
+        assert tenant.custom_config_dict.get("remove_webapp_brand") is not True
+
+    def test_owner_can_change_custom_config(self, app: Flask, monkeypatch: pytest.MonkeyPatch):
+        tenant = make_tenant("t1", custom_config={})
+        owner = make_account_with_tenant(tenant)
+        owner.role = TenantAccountRole.OWNER
+        _login_as(monkeypatch, owner)
+
+        api = CustomConfigWorkspaceApi()
+        with (
+            app.test_request_context("/workspaces/custom-config", method="POST", json={"remove_webapp_brand": True}),
+            patch("controllers.console.workspace.workspace.db.get_or_404", return_value=tenant),
+            patch("controllers.console.workspace.workspace.db.session.commit"),
+            patch(
+                "controllers.console.workspace.workspace.WorkspaceService.get_tenant_info",
+                return_value={"id": "t1"},
+            ),
+        ):
+            result = api.post()
+
+        assert result["result"] == "success"
+
+    def test_dataset_operator_cannot_upload_webapp_logo(self, app: Flask, monkeypatch: pytest.MonkeyPatch):
+        tenant = make_tenant("t1")
+        operator = make_account_with_tenant(tenant)
+        operator.role = TenantAccountRole.DATASET_OPERATOR
+        _login_as(monkeypatch, operator)
+
+        file = FileStorage(stream=BytesIO(b"data"), filename="logo.png", content_type="image/png")
+        upload = MagicMock(id="file1")
+
+        api = WebappLogoWorkspaceApi()
+        with (
+            app.test_request_context(
+                "/workspaces/custom-config/webapp-logo/upload",
+                method="POST",
+                data={"file": file},
+                content_type="multipart/form-data",
+            ),
+            patch("controllers.console.workspace.workspace.FileService") as fs,
+            patch("controllers.console.workspace.workspace.db") as mock_db,
+        ):
+            mock_db.engine = MagicMock()
+            fs.return_value.upload_file.return_value = upload
+
+            with pytest.raises(Forbidden):
+                api.post()
+
+    def test_owner_can_upload_webapp_logo(self, app: Flask, monkeypatch: pytest.MonkeyPatch):
+        tenant = make_tenant("t1")
+        owner = make_account_with_tenant(tenant)
+        owner.role = TenantAccountRole.OWNER
+        _login_as(monkeypatch, owner)
+
+        file = FileStorage(stream=BytesIO(b"data"), filename="logo.png", content_type="image/png")
+        upload = MagicMock(id="file1")
+
+        api = WebappLogoWorkspaceApi()
+        with (
+            app.test_request_context(
+                "/workspaces/custom-config/webapp-logo/upload",
+                method="POST",
+                data={"file": file},
+                content_type="multipart/form-data",
+            ),
+            patch("controllers.console.workspace.workspace.FileService") as fs,
+            patch("controllers.console.workspace.workspace.db") as mock_db,
+        ):
+            mock_db.engine = MagicMock()
+            fs.return_value.upload_file.return_value = upload
+
+            result, status = api.post()
+
+        assert status == HTTPStatus.CREATED
+        assert result == {"id": "file1"}
