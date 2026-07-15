@@ -42,3 +42,15 @@ accepted_coverage_gaps:
 
   - gap: "dify-agent (dify-agent/ checkout) source changes reflected in the running agent_backend service"
     reason: "The caller's build scope for this harness was api/ (backend), web/ (frontend), and docker/ (middleware); agent_backend runs docker-compose.yaml's pinned langgenius/dify-agent-backend:1.16.0-rc1 image rather than being rebuilt from the dify-agent/ checkout. Agent/workflow features that call through to agent_backend are reachable and testable, but any uncommitted or very recent change specifically inside dify-agent/src is not reflected in the running instance."
+
+  - gap: "Standalone OpenAPI interface (/openapi/v1/* auth/device/oauth flows)"
+    reason: "OPENAPI_ENABLED defaults to false (docker/envs/core-services/shared.env.example:226) and the blueprint is never registered (api/extensions/ext_blueprints.py) in this deployment's default configuration, so the surface is unreachable in a stock self-hosted install. Enabling it is a config change outside this run's scope, not an environmental block; flag for a follow-up sweep with OPENAPI_ENABLED=true if this surface needs coverage."
+
+  - gap: "Workflow-run archive export/download and in-product notification endpoints"
+    reason: "Gated to cloud/enterprise edition (EDITION=SELF_HOSTED community build has no license); source-reviewed only, consistent with the existing SSO/RBAC enterprise-gate entry above."
+
+  - gap: "Workflow-collaboration websocket room-join authorization"
+    reason: "No live collaborative editing session could be established against this harness's seeded apps to exercise the cross-tenant/role room-join boundary live; source review indicates tenant/role gating but this is a code-level lead only, not a live-verified pass."
+
+  - gap: "Workflow-mode 'stop task' write path (POST /v1/workflows/tasks/{task_id}/stop)"
+    reason: "Generating a real streaming task_id to test set_stop_flag_no_user_check requires a configured LLM provider; both seeded apps are chat-mode with no real model-provider credentials (see the LLM/embedding inference gap above). Code-level lead only: structurally the same no-owner-check pattern as the confirmed annotation-reply job-status leak (TC-797298A6)."
