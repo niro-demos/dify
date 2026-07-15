@@ -5,8 +5,9 @@ from unittest.mock import MagicMock, PropertyMock, patch
 import pytest
 from flask import Flask
 from pytest_mock import MockerFixture
-from werkzeug.exceptions import NotFound
+from werkzeug.exceptions import Forbidden, NotFound
 
+import services.errors.account
 from controllers.console import console_ns
 from controllers.console.datasets.metadata import (
     DatasetMetadataApi,
@@ -15,7 +16,7 @@ from controllers.console.datasets.metadata import (
     DatasetMetadataCreateApi,
     DocumentMetadataEditApi,
 )
-from models.account import Account
+from models.account import Account, TenantAccountRole
 from services.dataset_service import DatasetService
 from services.entities.knowledge_entities.knowledge_entities import (
     MetadataArgs,
@@ -35,6 +36,16 @@ def app():
 def current_user() -> Account:
     user = Account(name="Test User", email="test@example.com")
     user.id = "user-1"
+    user.role = TenantAccountRole.EDITOR
+    return user
+
+
+@pytest.fixture
+def readonly_user() -> Account:
+    """A workspace member with only read access (not a dataset editor)."""
+    user = Account(name="Readonly User", email="readonly@example.com")
+    user.id = "user-readonly"
+    user.role = TenantAccountRole.NORMAL
     return user
 
 
@@ -148,9 +159,48 @@ class TestDatasetMetadataCreateApi:
             with pytest.raises(NotFound, match="Dataset not found"):
                 method(api, "tenant-1", current_user, dataset_id)
 
+    def test_create_metadata_readonly_member_forbidden(self, app: Flask, readonly_user, dataset, dataset_id):
+        """A read-only member must not create metadata on a shared dataset (TC-07AE0FA7)."""
+        api = DatasetMetadataCreateApi()
+        method = unwrap(api.post)
+
+        payload = {"name": "repro_field", "type": "string"}
+
+        with (
+            app.test_request_context("/"),
+            patch.object(
+                type(console_ns),
+                "payload",
+                new_callable=PropertyMock,
+                return_value=payload,
+            ),
+            patch.object(
+                MetadataArgs,
+                "model_validate",
+                return_value=MagicMock(),
+            ),
+            patch.object(
+                DatasetService,
+                "get_dataset",
+                return_value=dataset,
+            ),
+            # check_dataset_permission verifies READ access, which the member has on an all_team_members dataset.
+            patch.object(
+                DatasetService,
+                "check_dataset_permission",
+            ),
+            patch.object(
+                MetadataService,
+                "create_metadata",
+                return_value={"id": "m1", "type": "string", "name": "repro_field"},
+            ),
+        ):
+            with pytest.raises(Forbidden):
+                method(api, "tenant-1", readonly_user, dataset_id)
+
 
 class TestDatasetMetadataGetApi:
-    def test_get_metadata_success(self, app: Flask, dataset, dataset_id):
+    def test_get_metadata_success(self, app: Flask, current_user, dataset, dataset_id):
         api = DatasetMetadataCreateApi()
         method = unwrap(api.get)
 
@@ -162,6 +212,10 @@ class TestDatasetMetadataGetApi:
                 return_value=dataset,
             ),
             patch.object(
+                DatasetService,
+                "check_dataset_permission",
+            ),
+            patch.object(
                 MetadataService,
                 "get_dataset_metadatas",
                 return_value={
@@ -170,13 +224,13 @@ class TestDatasetMetadataGetApi:
                 },
             ),
         ):
-            result, status = method(api, dataset_id)
+            result, status = method(api, current_user, dataset_id)
 
         assert status == 200
         assert result["doc_metadata"] == [{"id": "m1", "name": "author", "type": "string", "count": 0}]
         assert result["built_in_field_enabled"] is False
 
-    def test_get_metadata_dataset_not_found(self, app: Flask, dataset_id):
+    def test_get_metadata_dataset_not_found(self, app: Flask, current_user, dataset_id):
         api = DatasetMetadataCreateApi()
         method = unwrap(api.get)
 
@@ -189,7 +243,35 @@ class TestDatasetMetadataGetApi:
             ),
         ):
             with pytest.raises(NotFound):
-                method(api, dataset_id)
+                method(api, current_user, dataset_id)
+
+    def test_get_metadata_unauthorized_member_forbidden(self, app: Flask, current_user, dataset, dataset_id):
+        """A member denied read access to a private dataset must not read its metadata (TC-AB6078EE)."""
+        api = DatasetMetadataCreateApi()
+        method = unwrap(api.get)
+
+        with (
+            app.test_request_context("/"),
+            patch.object(
+                DatasetService,
+                "get_dataset",
+                return_value=dataset,
+            ),
+            patch.object(
+                DatasetService,
+                "check_dataset_permission",
+                side_effect=services.errors.account.NoPermissionError(
+                    "You do not have permission to access this dataset."
+                ),
+            ),
+            patch.object(
+                MetadataService,
+                "get_dataset_metadatas",
+                return_value={"doc_metadata": [{"id": "leaked", "name": "secret", "type": "string"}]},
+            ),
+        ):
+            with pytest.raises(Forbidden):
+                method(api, current_user, dataset_id)
 
 
 class TestDatasetMetadataApi:
@@ -252,6 +334,63 @@ class TestDatasetMetadataApi:
 
         assert status == 204
         assert result == ""
+
+    def test_delete_metadata_readonly_member_forbidden(self, app: Flask, readonly_user, dataset, dataset_id, metadata_id):
+        """A read-only member must not delete metadata on a shared dataset (TC-07AE0FA7)."""
+        api = DatasetMetadataApi()
+        method = unwrap(api.delete)
+
+        with (
+            app.test_request_context("/"),
+            patch.object(
+                DatasetService,
+                "get_dataset",
+                return_value=dataset,
+            ),
+            patch.object(
+                DatasetService,
+                "check_dataset_permission",
+            ),
+            patch.object(
+                MetadataService,
+                "delete_metadata",
+            ),
+        ):
+            with pytest.raises(Forbidden):
+                method(api, readonly_user, dataset_id, metadata_id)
+
+    def test_update_metadata_readonly_member_forbidden(self, app: Flask, readonly_user, dataset, dataset_id, metadata_id):
+        """A read-only member must not rename metadata on a shared dataset (TC-07AE0FA7)."""
+        api = DatasetMetadataApi()
+        method = unwrap(api.patch)
+
+        payload = {"name": "updated-name"}
+
+        with (
+            app.test_request_context("/"),
+            patch.object(
+                type(console_ns),
+                "payload",
+                new_callable=PropertyMock,
+                return_value=payload,
+            ),
+            patch.object(
+                DatasetService,
+                "get_dataset",
+                return_value=dataset,
+            ),
+            patch.object(
+                DatasetService,
+                "check_dataset_permission",
+            ),
+            patch.object(
+                MetadataService,
+                "update_metadata_name",
+                return_value={"id": "m1", "type": "string", "name": "updated-name"},
+            ),
+        ):
+            with pytest.raises(Forbidden):
+                method(api, "tenant-1", readonly_user, dataset_id, metadata_id)
 
 
 class TestDatasetMetadataBuiltInFieldApi:
