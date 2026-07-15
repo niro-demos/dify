@@ -1,0 +1,25 @@
+# Niro harness override: point the app-code services at images built from
+# the current checkout (see start.sh) instead of the pinned langgenius/*
+# release tags baked into docker-compose.yaml. Everything else (postgres,
+# redis, weaviate, sandbox, plugin_daemon, ssrf_proxy, nginx, agent_backend,
+# ...) keeps using docker-compose.yaml's own pinned middleware images
+# unchanged.
+#
+# Used as: docker compose -f docker-compose.yaml -f <this file> ...
+# from within docker/. Never edits docker-compose.yaml itself.
+services:
+  api:
+    image: dify-api-niro:local
+    pull_policy: never
+  api_websocket:
+    image: dify-api-niro:local
+    pull_policy: never
+  worker:
+    image: dify-api-niro:local
+    pull_policy: never
+  worker_beat:
+    image: dify-api-niro:local
+    pull_policy: never
+  web:
+    image: dify-web-niro:local
+    pull_policy: never

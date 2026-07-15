@@ -1,0 +1,44 @@
+# accepted-coverage-gaps.yaml — what cannot be tested in this setup, and why.
+#
+# Every entry is a coverage gap treated as ACCEPTED: as long as an entry exists,
+# the tool will not re-report that gap on every run. To stop accepting one (it
+# became testable — you added the credential, enabled the flag, wired the
+# service), delete it. Version control records who changed what, and when.
+#
+#   gap:     what cannot be exercised here — the specific surface or capability
+#            left untested. (max 1000 runes)
+#   reason:  why it is structurally untestable in THIS setup — prod-only behavior,
+#            external infra/secrets you don't have, a licensed build you can't
+#            produce. Be specific enough that a reviewer can challenge it.
+#
+# Only genuinely unfixable gaps belong here. A gap you could close by adding a
+# fixture, credential, or flag is work to do — not a gap to accept. Broad entries
+# hide real blind spots.
+#
+# This file accumulates across runs and is APPEND-ONLY. Anyone updating it — tool
+# or human — must read it first, keep every existing entry, and only append;
+# never rewrite, reorder, or drop entries. There is no generator for it (it is
+# authored judgment, not derived data), so a clobbered entry is gone for good.
+# COMMIT it to git — that is your history, your review trail, and your undo.
+#
+# Create `accepted-coverage-gaps.yaml` next to this file, carrying this header
+# into it so its rules travel with the data.
+
+accepted_coverage_gaps:
+  - gap: "Actual LLM/embedding-model inference (chat completion, workflow LLM/agent nodes, high-quality/embedding-based dataset indexing)"
+    reason: "No real model-provider credentials (OpenAI/Anthropic/Azure/etc) are configured in this harness -- seeding real third-party API keys isn't possible without a human's own provider account. Apps, workflows, and datasets are fully seeded and reachable for CRUD/authorization/config testing (see fixtures org_a_chat_app, org_a_dataset); only the code paths that call out to a configured model provider are unexercised. Datasets use indexing_technique=economy specifically so dataset creation/document CRUD/authz work without an embedding model."
+
+  - gap: "Plugin marketplace installation and marketplace-sourced plugin execution"
+    reason: "plugin_daemon is running and its API surface (/e/*, install/list/upgrade endpoints) is reachable, but no third-party plugin from https://marketplace.dify.ai is installed as seed data -- doing so would pull and execute arbitrary third-party code as part of harness setup, which is out of scope for an automated seed script. Plugin-management authorization (who can install/configure) is testable against the empty-plugins baseline; behavior of a specific installed plugin is not."
+
+  - gap: "Outbound email delivery (signup verification codes, password-reset emails, workspace-invite emails)"
+    reason: "No SMTP/mail provider is configured in docker/.env for this harness. Endpoints that trigger these emails are reachable and their request/response contract is testable, but real inbox delivery and email-embedded token flows (e.g. clicking a reset link from an actual email) cannot be observed."
+
+  - gap: "SSO/OAuth enterprise login and fine-grained RBAC (RBACService/RBAC_ENABLED role-permission matrix)"
+    reason: "This harness runs EDITION=SELF_HOSTED community edition with no enterprise license; configs/enterprise/RBAC_ENABLED and SSO are enterprise-gated features not compiled into an active code path here. Authorization is tested via the legacy TenantAccountRole matrix (owner/admin/editor/normal/dataset_operator) seeded across both orgs instead."
+
+  - gap: "Billing / credit-pool authorization surfaces"
+    reason: "BILLING_ENABLED is false by default in this self-hosted deployment (no billing provider configured), so billing-gated endpoints short-circuit rather than exercising real authorization logic."
+
+  - gap: "dify-agent (dify-agent/ checkout) source changes reflected in the running agent_backend service"
+    reason: "The caller's build scope for this harness was api/ (backend), web/ (frontend), and docker/ (middleware); agent_backend runs docker-compose.yaml's pinned langgenius/dify-agent-backend:1.16.0-rc1 image rather than being rebuilt from the dify-agent/ checkout. Agent/workflow features that call through to agent_backend are reachable and testable, but any uncommitted or very recent change specifically inside dify-agent/src is not reflected in the running instance."
