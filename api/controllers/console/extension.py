@@ -17,7 +17,15 @@ from services.code_based_extension_service import CodeBasedExtensionService
 
 from ..common.schema import query_params_from_model, register_response_schema_models, register_schema_models
 from . import console_ns
-from .wraps import account_initialization_required, setup_required, with_current_tenant_id
+from .wraps import (
+    RBACPermission,
+    RBACResourceScope,
+    account_initialization_required,
+    is_admin_or_owner_required,
+    rbac_permission_required,
+    setup_required,
+    with_current_tenant_id,
+)
 
 
 class CodeBasedExtensionQuery(BaseModel):
@@ -107,6 +115,8 @@ class APIBasedExtensionAPI(Resource):
     @console_ns.response(200, "Success", console_ns.models[APIBasedExtensionListResponse.__name__])
     @setup_required
     @login_required
+    @is_admin_or_owner_required
+    @rbac_permission_required(RBACResourceScope.WORKSPACE, RBACPermission.API_EXTENSION_MANAGE, resource_required=False)
     @account_initialization_required
     @with_current_tenant_id
     def get(self, current_tenant_id: str):
@@ -121,6 +131,8 @@ class APIBasedExtensionAPI(Resource):
     @console_ns.response(201, "Extension created successfully", console_ns.models[APIBasedExtensionResponse.__name__])
     @setup_required
     @login_required
+    @is_admin_or_owner_required
+    @rbac_permission_required(RBACResourceScope.WORKSPACE, RBACPermission.API_EXTENSION_MANAGE, resource_required=False)
     @account_initialization_required
     @with_current_tenant_id
     def post(self, current_tenant_id: str):
@@ -151,6 +163,8 @@ class APIBasedExtensionDetailAPI(Resource):
     @console_ns.response(200, "Success", console_ns.models[APIBasedExtensionResponse.__name__])
     @setup_required
     @login_required
+    @is_admin_or_owner_required
+    @rbac_permission_required(RBACResourceScope.WORKSPACE, RBACPermission.API_EXTENSION_MANAGE, resource_required=False)
     @account_initialization_required
     @with_current_tenant_id
     def get(self, current_tenant_id: str, id: UUID):
@@ -170,6 +184,8 @@ class APIBasedExtensionDetailAPI(Resource):
     @console_ns.response(200, "Extension updated successfully", console_ns.models[APIBasedExtensionResponse.__name__])
     @setup_required
     @login_required
+    @is_admin_or_owner_required
+    @rbac_permission_required(RBACResourceScope.WORKSPACE, RBACPermission.API_EXTENSION_MANAGE, resource_required=False)
     @account_initialization_required
     @with_current_tenant_id
     def post(self, current_tenant_id: str, id: UUID):
@@ -204,6 +220,8 @@ class APIBasedExtensionDetailAPI(Resource):
     @console_ns.response(204, "Extension deleted successfully")
     @setup_required
     @login_required
+    @is_admin_or_owner_required
+    @rbac_permission_required(RBACResourceScope.WORKSPACE, RBACPermission.API_EXTENSION_MANAGE, resource_required=False)
     @account_initialization_required
     @with_current_tenant_id
     def delete(self, current_tenant_id: str, id: UUID):

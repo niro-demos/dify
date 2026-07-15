@@ -3,11 +3,13 @@ from __future__ import annotations
 import builtins
 import uuid
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock
 
 import pytest
 from flask import Flask
 from flask.views import MethodView as FlaskMethodView
+from werkzeug.exceptions import Forbidden
 
 _NEEDS_METHOD_VIEW_CLEANUP = False
 if not hasattr(builtins, "MethodView"):
@@ -23,7 +25,8 @@ from controllers.console.extension import (
 
 if _NEEDS_METHOD_VIEW_CLEANUP:
     del builtins.__dict__["MethodView"]
-from models.account import AccountStatus
+from models import Account
+from models.account import AccountStatus, TenantAccountRole
 from models.api_based_extension import APIBasedExtension
 
 
@@ -50,25 +53,51 @@ def _masked_api_key(api_key: str) -> str:
     return api_key[:3] + "******" + api_key[-3:]
 
 
+def _make_account(
+    role: TenantAccountRole,
+    *,
+    account_id: str = "account-123",
+    tenant_id: str = "tenant-123",
+) -> Account:
+    """Build a real ``Account`` (not a ``MagicMock``) so role-gated decorators such as
+    ``is_admin_or_owner_required`` and ``rbac_permission_required`` -- which do a genuine
+    ``isinstance(user, Account)`` check and read ``user.is_admin_or_owner`` -- exercise
+    their real logic instead of vacuously passing on a mock.
+    """
+    account = Account(name="Test User", email=f"{account_id}@example.com", status=AccountStatus.ACTIVE)
+    account.id = account_id
+    account.role = role
+    account._current_tenant = SimpleNamespace(id=tenant_id)  # avoids a DB-backed tenant lookup via the real setter
+    return account
+
+
+def _login_as(monkeypatch: pytest.MonkeyPatch, role: TenantAccountRole) -> Account:
+    """Swap the logged-in account for the duration of a test."""
+    account = _make_account(role)
+    monkeypatch.setattr("libs.login._get_user", lambda: account)
+    return account
+
+
 @pytest.fixture(autouse=True)
-def _mock_console_guards(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
-    """Bypass console decorators so handlers can run in isolation."""
+def _mock_console_guards(monkeypatch: pytest.MonkeyPatch) -> Account:
+    """Bypass setup/login plumbing so handlers can run in isolation, logged in as a
+    workspace owner by default. Individual tests can call ``_login_as`` to exercise
+    the permission gate as a lower-privileged member.
+    """
 
     from controllers.console import wraps as wraps_module
 
-    account = MagicMock()
-    account.status = AccountStatus.ACTIVE
-    account.current_tenant_id = "tenant-123"
-    account.id = "account-123"
-    account.is_authenticated = True
+    account = _make_account(TenantAccountRole.OWNER)
 
     monkeypatch.setattr(wraps_module.dify_config, "EDITION", "CLOUD")
+    monkeypatch.setattr(wraps_module.dify_config, "RBAC_ENABLED", False)
     monkeypatch.setattr("libs.login.dify_config.LOGIN_DISABLED", True)
     monkeypatch.delenv("INIT_PASSWORD", raising=False)
-    monkeypatch.setattr(wraps_module, "current_account_with_tenant", lambda: (account, "tenant-123"))
 
-    # The login_required decorator consults the shared LocalProxy in libs.login.
-    monkeypatch.setattr("libs.login.current_user", account)
+    # Route every current-user lookup (login_required, with_current_tenant_id,
+    # is_admin_or_owner_required, rbac_permission_required, ...) through the same
+    # real account so each decorator's own logic runs for real.
+    monkeypatch.setattr("libs.login._get_user", lambda: account)
     monkeypatch.setattr("libs.login.check_csrf_token", lambda *_, **__: None)
 
     return account
@@ -242,3 +271,130 @@ def test_api_based_extension_detail_delete_removes_extension(app: Flask, monkeyp
     delete_mock.assert_called_once_with(existing_extension, session=ANY)
     assert status == 204
     assert response == ""
+
+
+# --- Regression coverage for TC-4F3A5F52 -----------------------------------
+#
+# Invariant: a workspace member with the plain "normal" role (no app/dataset
+# management permission) must not be able to list, create, view, update, or
+# delete the tenant's API-based extension integrations (server-side endpoint +
+# secret key the backend calls on the tenant's behalf). Every method on both
+# resource classes previously carried no permission gate at all.
+
+
+def test_api_based_extension_get_rejects_normal_member(app: Flask, monkeypatch: pytest.MonkeyPatch):
+    _login_as(monkeypatch, TenantAccountRole.NORMAL)
+    service_mock = MagicMock(return_value=[])
+    monkeypatch.setattr(
+        "controllers.console.extension.APIBasedExtensionService.get_all_by_tenant_id",
+        service_mock,
+    )
+
+    with app.test_request_context("/console/api/api-based-extension", method="GET"):
+        with pytest.raises(Forbidden):
+            APIBasedExtensionAPI().get()
+
+    service_mock.assert_not_called()
+
+
+def test_api_based_extension_post_rejects_normal_member(app: Flask, monkeypatch: pytest.MonkeyPatch):
+    _login_as(monkeypatch, TenantAccountRole.NORMAL)
+    save_mock = MagicMock(return_value=_make_extension())
+    monkeypatch.setattr("controllers.console.extension.APIBasedExtensionService.save", save_mock)
+
+    payload = {
+        "name": "member-created-ext",
+        "api_endpoint": "http://example.com/",
+        "api_key": "keyvalue12345",
+    }
+
+    with app.test_request_context("/console/api/api-based-extension", method="POST", json=payload):
+        with pytest.raises(Forbidden):
+            APIBasedExtensionAPI().post()
+
+    save_mock.assert_not_called()
+
+
+def test_api_based_extension_detail_get_rejects_normal_member(app: Flask, monkeypatch: pytest.MonkeyPatch):
+    _login_as(monkeypatch, TenantAccountRole.NORMAL)
+    service_mock = MagicMock(return_value=_make_extension())
+    monkeypatch.setattr(
+        "controllers.console.extension.APIBasedExtensionService.get_with_tenant_id",
+        service_mock,
+    )
+
+    extension_id = uuid.uuid4()
+    with app.test_request_context(f"/console/api/api-based-extension/{extension_id}", method="GET"):
+        with pytest.raises(Forbidden):
+            APIBasedExtensionDetailAPI().get(extension_id)
+
+    service_mock.assert_not_called()
+
+
+def test_api_based_extension_detail_post_rejects_normal_member(app: Flask, monkeypatch: pytest.MonkeyPatch):
+    _login_as(monkeypatch, TenantAccountRole.NORMAL)
+    get_mock = MagicMock(return_value=_make_extension())
+    save_mock = MagicMock()
+    monkeypatch.setattr(
+        "controllers.console.extension.APIBasedExtensionService.get_with_tenant_id",
+        get_mock,
+    )
+    monkeypatch.setattr("controllers.console.extension.APIBasedExtensionService.save", save_mock)
+
+    payload = {
+        "name": "member-updated-ext",
+        "api_endpoint": "http://example.com/",
+        "api_key": "new-secret",
+    }
+
+    extension_id = uuid.uuid4()
+    with app.test_request_context(
+        f"/console/api/api-based-extension/{extension_id}",
+        method="POST",
+        json=payload,
+    ):
+        with pytest.raises(Forbidden):
+            APIBasedExtensionDetailAPI().post(extension_id)
+
+    get_mock.assert_not_called()
+    save_mock.assert_not_called()
+
+
+def test_api_based_extension_detail_delete_rejects_normal_member(app: Flask, monkeypatch: pytest.MonkeyPatch):
+    _login_as(monkeypatch, TenantAccountRole.NORMAL)
+    get_mock = MagicMock(return_value=_make_extension())
+    delete_mock = MagicMock()
+    monkeypatch.setattr(
+        "controllers.console.extension.APIBasedExtensionService.get_with_tenant_id",
+        get_mock,
+    )
+    monkeypatch.setattr("controllers.console.extension.APIBasedExtensionService.delete", delete_mock)
+
+    extension_id = uuid.uuid4()
+    with app.test_request_context(f"/console/api/api-based-extension/{extension_id}", method="DELETE"):
+        with pytest.raises(Forbidden):
+            APIBasedExtensionDetailAPI().delete(extension_id)
+
+    get_mock.assert_not_called()
+    delete_mock.assert_not_called()
+
+
+def test_api_based_extension_post_allows_owner(app: Flask, monkeypatch: pytest.MonkeyPatch):
+    """Positive control: the same gate must still let a privileged role through."""
+    _login_as(monkeypatch, TenantAccountRole.OWNER)
+    saved_extension = _make_extension(name="Owner Created", api_key="owner-secret-1")
+    save_mock = MagicMock(return_value=saved_extension)
+    monkeypatch.setattr("controllers.console.extension.APIBasedExtensionService.save", save_mock)
+
+    payload = {
+        "name": "Owner Created",
+        "api_endpoint": "https://ops.example.com/hook",
+        "api_key": "owner-secret-1",
+    }
+
+    with app.test_request_context("/console/api/api-based-extension", method="POST", json=payload):
+        response, status = APIBasedExtensionAPI().post()
+
+    assert status == 201
+    save_mock.assert_called_once()
+    assert response["name"] == "Owner Created"
