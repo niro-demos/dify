@@ -18,6 +18,7 @@ from tests.test_containers_integration_tests.controllers.console.helpers import 
     authenticate_console_client,
     create_console_account_and_tenant,
     create_console_app,
+    create_console_member,
 )
 
 
@@ -128,6 +129,47 @@ class TestAppApiKeyListResource:
 
         assert resp.status_code == 404
 
+    def test_get_keys_forbidden_for_normal_role_member(
+        self,
+        db_session_with_containers: Session,
+        test_client_with_containers: FlaskClient,
+    ) -> None:
+        """A normal-role workspace member must not be able to read the app's plaintext API keys.
+
+        Regression test: the GET handler used to be missing the @edit_permission_required gate
+        that the sibling POST/DELETE handlers on this same resource already carry, letting any
+        tenant member read live Service-API bearer tokens regardless of role.
+
+        This test issues exactly one authenticated HTTP request (the member's GET). The pre-
+        existing key is seeded via a direct DB insert instead of an owner HTTP call:
+        ``db_session_with_containers`` holds one Flask app context open for the whole test, so
+        Flask reuses that context -- and the ``flask.g`` it carries -- for every request made
+        through a test client during the test. A second authenticated request would therefore
+        silently reuse the first request's resolved ``current_user`` instead of re-authenticating
+        as the new actor, rather than re-invoking the login machinery under test. The owner side
+        of this invariant (an editing-role account can still list its own keys) is already covered
+        by ``test_get_empty_keys`` / ``test_get_keys_after_create`` above, which each make a single
+        request as the same actor.
+        """
+        owner, tenant = create_console_account_and_tenant(db_session_with_containers)
+        app = create_console_app(db_session_with_containers, tenant.id, owner.id, AppMode.CHAT)
+        db_session_with_containers.add(
+            ApiToken(
+                app_id=app.id,
+                tenant_id=tenant.id,
+                type=ApiTokenType.APP,
+                token=ApiToken.generate_api_key("app-", 24),
+            )
+        )
+        db_session_with_containers.commit()
+
+        member = create_console_member(db_session_with_containers, tenant.id, role=TenantAccountRole.NORMAL)
+        member_headers = authenticate_console_client(test_client_with_containers, member)
+
+        resp = test_client_with_containers.get(f"/console/api/apps/{app.id}/api-keys", headers=member_headers)
+
+        assert resp.status_code == 403
+
 
 class TestAppApiKeyResource:
     """Tests for DELETE /apps/<resource_id>/api-keys/<api_key_id>."""
@@ -184,3 +226,10 @@ class TestAppApiKeyResource:
         ):
             with pytest.raises(Forbidden):
                 BaseApiKeyResource.delete(resource, "rid", "kid", "tenant-id", non_admin)
+
+    # Note: DatasetApiKeyListResource.get's equivalent permission gate is covered at the unit
+    # level (tests/unit_tests/controllers/console/test_apikey.py), not here. Creating or listing
+    # dataset API keys through this HTTP path currently 500s regardless of role, because
+    # `ApiToken` has no mapped `dataset_id` column despite the `api_tokens` table having one
+    # (see the "bug: this uses setattr" comment on `ApiToken` in models/model.py) -- a
+    # pre-existing, unrelated defect that is out of scope for this permission fix.

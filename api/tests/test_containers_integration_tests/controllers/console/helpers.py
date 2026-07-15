@@ -61,6 +61,42 @@ def create_console_account_and_tenant(db_session: Session) -> tuple[Account, Ten
     return account, tenant
 
 
+def create_console_member(
+    db_session: Session, tenant_id: str, *, role: TenantAccountRole = TenantAccountRole.NORMAL
+) -> Account:
+    """Create an initialized account joined to an existing tenant under the given role.
+
+    Unlike ``create_console_account_and_tenant`` (which always mints a fresh tenant with an
+    ``OWNER``), this joins an already-created tenant so tests can exercise permission checks
+    between accounts that share a workspace but hold different roles.
+    """
+    account = Account(
+        email=f"test-{uuid.uuid4()}@example.com",
+        name="Test Member",
+        interface_language="en-US",
+        status=AccountStatus.ACTIVE,
+    )
+    account.initialized_at = naive_utc_now()
+    db_session.add(account)
+    db_session.commit()
+
+    db_session.add(
+        TenantAccountJoin(
+            tenant_id=tenant_id,
+            account_id=account.id,
+            role=role,
+            current=True,
+        )
+    )
+    db_session.commit()
+
+    account.set_tenant_id(tenant_id)
+    account.timezone = "UTC"
+    db_session.commit()
+
+    return account
+
+
 def create_console_app(db_session: Session, tenant_id: str, account_id: str, mode: AppMode) -> App:
     """Create a minimal app row that can be loaded by get_app_model."""
     app = App(

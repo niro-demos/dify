@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import uuid
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import cast
@@ -9,7 +10,13 @@ from unittest.mock import patch
 import pytest
 from werkzeug.exceptions import Forbidden
 
-from controllers.console.apikey import BaseApiKeyListResource, BaseApiKeyResource
+from controllers.console.apikey import (
+    ApiKeyList,
+    AppApiKeyListResource,
+    BaseApiKeyListResource,
+    BaseApiKeyResource,
+    DatasetApiKeyListResource,
+)
 from models import Account
 from models.account import AccountStatus, TenantAccountRole
 from models.enums import ApiTokenType
@@ -42,6 +49,26 @@ def _make_account(role: TenantAccountRole) -> Account:
     account.id = f"{role.value}-user"
     account.role = role
     return account
+
+
+class _CurrentUserProxyStub:
+    """Minimal stand-in for flask-login's ``current_user`` LocalProxy.
+
+    ``edit_permission_required`` calls ``current_user._get_current_object()`` directly (rather
+    than going through the ``getattr``-guarded fallback other decorators use), so exercising it
+    needs a stub that supports that exact call without standing up a full Flask-Login request
+    context.
+    """
+
+    def __init__(self, account: Account) -> None:
+        self._account = account
+
+    def _get_current_object(self) -> Account:
+        return self._account
+
+    @property
+    def has_edit_permission(self) -> bool:
+        return self._account.has_edit_permission
 
 
 def test_list_api_keys_uses_injected_tenant_id() -> None:
@@ -139,3 +166,58 @@ def test_delete_api_key_uses_injected_user_and_tenant() -> None:
     db_mock.session.commit.assert_called_once()
     assert result == ""
     assert status == 204
+
+
+@pytest.mark.parametrize(
+    "resource_cls",
+    [AppApiKeyListResource, DatasetApiKeyListResource],
+    ids=["app", "dataset"],
+)
+def test_get_api_keys_forbidden_for_normal_role_member(
+    resource_cls: type[BaseApiKeyListResource],
+) -> None:
+    """Regression test for TC-3C30075F.
+
+    GET must require the same edit permission POST/DELETE already enforce on this resource, so
+    a normal-role (non-editing) tenant member cannot read another member's plaintext API keys.
+    The list query itself is patched out so the assertion isolates the permission gate from the
+    query implementation.
+    """
+    resource = resource_cls()
+    account = _make_account(TenantAccountRole.NORMAL)
+
+    with (
+        patch("controllers.console.wraps.current_account_with_tenant", return_value=(account, "tenant-1")),
+        patch("libs.login.current_user", _CurrentUserProxyStub(account)),
+        patch.object(resource_cls, "_get_api_key_list") as get_list,
+    ):
+        with pytest.raises(Forbidden):
+            resource.get(resource_id=uuid.uuid4())
+
+    get_list.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "resource_cls",
+    [AppApiKeyListResource, DatasetApiKeyListResource],
+    ids=["app", "dataset"],
+)
+def test_get_api_keys_allowed_for_editing_role_account(
+    resource_cls: type[BaseApiKeyListResource],
+) -> None:
+    """Control for the test above: an editing-role account (the write path's own bar) can still
+    list the keys, proving the permission gate discriminates by role rather than blocking GET
+    outright."""
+    resource = resource_cls()
+    account = _make_account(TenantAccountRole.OWNER)
+    keys = ApiKeyList(data=[])
+
+    with (
+        patch("controllers.console.wraps.current_account_with_tenant", return_value=(account, "tenant-1")),
+        patch("libs.login.current_user", _CurrentUserProxyStub(account)),
+        patch.object(resource_cls, "_get_api_key_list", return_value=keys) as get_list,
+    ):
+        result = resource.get(resource_id=uuid.uuid4())
+
+    get_list.assert_called_once()
+    assert result == {"data": []}
