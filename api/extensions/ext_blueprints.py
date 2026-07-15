@@ -12,6 +12,19 @@ OPENAPI_HEADERS: tuple[str, ...] = ("Authorization", "Content-Type", HEADER_NAME
 OPENAPI_MAX_AGE_SECONDS: int = 600
 
 
+def _sanitize_credentialed_origins(origins: list[str]) -> list[str]:
+    """Remove wildcard origins when credentials are enabled.
+
+    The CORS spec forbids ``Access-Control-Allow-Origin: *`` with
+    ``Access-Control-Allow-Credentials: true``. flask-cors silently
+    reflects the request ``Origin`` instead, which allows any website to
+    make credentialed requests. Filter out ``*`` (and empty strings) so
+    only explicit, trusted origins are admitted; an empty result means
+    same-origin only (no cross-origin access).
+    """
+    return [o for o in origins if o and o != "*"]
+
+
 def _apply_cors_once(bp, /, **cors_kwargs):
     """Make CORS idempotent so blueprints can be reused across multiple app instances."""
 
@@ -52,7 +65,7 @@ def init_app(app: DifyApp):
         # the same as on the console blueprint.
         _apply_cors_once(
             openapi_bp,
-            resources={r"/*": {"origins": dify_config.OPENAPI_CORS_ALLOW_ORIGINS}},
+            resources={r"/*": {"origins": _sanitize_credentialed_origins(dify_config.OPENAPI_CORS_ALLOW_ORIGINS)}},
             supports_credentials=True,
             allow_headers=list(OPENAPI_HEADERS),
             methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
@@ -79,7 +92,7 @@ def init_app(app: DifyApp):
             },
             # Default web application endpoints (authenticated)
             r"/*": {
-                "origins": dify_config.WEB_API_CORS_ALLOW_ORIGINS,
+                "origins": _sanitize_credentialed_origins(dify_config.WEB_API_CORS_ALLOW_ORIGINS),
                 "supports_credentials": True,
                 "allow_headers": list(AUTHENTICATED_HEADERS),
                 "methods": ["GET", "PUT", "POST", "DELETE", "OPTIONS", "PATCH"],
@@ -91,7 +104,7 @@ def init_app(app: DifyApp):
 
     _apply_cors_once(
         console_app_bp,
-        resources={r"/*": {"origins": dify_config.CONSOLE_CORS_ALLOW_ORIGINS}},
+        resources={r"/*": {"origins": _sanitize_credentialed_origins(dify_config.CONSOLE_CORS_ALLOW_ORIGINS)}},
         supports_credentials=True,
         allow_headers=list(AUTHENTICATED_HEADERS),
         methods=["GET", "PUT", "POST", "DELETE", "OPTIONS", "PATCH"],
