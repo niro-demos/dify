@@ -293,6 +293,7 @@ class MessageFeedbackExportApi(Resource):
     @setup_required
     @login_required
     @account_initialization_required
+    @edit_permission_required
     @rbac_permission_required(RBACResourceScope.APP, RBACPermission.APP_VIEW_LAYOUT)
     @get_app_model
     def get(self, app_model: App):

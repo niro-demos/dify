@@ -7,9 +7,10 @@ from types import SimpleNamespace
 from unittest import mock
 
 import pytest
+from flask import Response
 from flask.testing import FlaskClient
+from werkzeug.local import LocalProxy
 
-from controllers.console.app import message as message_api
 from controllers.console.app import wraps
 from libs.datetime_utils import naive_utc_now
 from models import App, Tenant
@@ -34,7 +35,7 @@ class TestFeedbackExportApi:
         return app
 
     @pytest.fixture
-    def mock_account(self, monkeypatch: pytest.MonkeyPatch):
+    def mock_account(self, monkeypatch: pytest.MonkeyPatch, flask_app):
         """Create a mock Account for testing."""
         account = Account(
             name="Test User",
@@ -51,18 +52,32 @@ class TestFeedbackExportApi:
 
         mock_session_instance = mock.Mock()
 
-        mock_tenant_join = TenantAccountJoin(role=TenantAccountRole.OWNER)
+        mock_tenant_join = TenantAccountJoin(tenant_id=tenant.id, account_id=account.id, role=TenantAccountRole.OWNER)
         monkeypatch.setattr(mock_session_instance, "scalar", mock.Mock(return_value=mock_tenant_join))
 
         mock_scalars_result = mock.Mock()
         mock_scalars_result.one.return_value = tenant
         monkeypatch.setattr(mock_session_instance, "scalars", mock.Mock(return_value=mock_scalars_result))
 
-        mock_session_context = mock.Mock()
+        mock_session_context = mock.MagicMock()
         mock_session_context.__enter__.return_value = mock_session_instance
         monkeypatch.setattr("models.account.Session", lambda _, expire_on_commit: mock_session_context)
 
-        account.current_tenant = tenant
+        # `current_tenant`'s setter needs an app context (it reads `db.engine`); scope
+        # it narrowly here instead of leaving a request context open for the whole
+        # test, which would otherwise unbalance the test client's own request-context
+        # push/pop and blow up teardown.
+        with flask_app.app_context():
+            account.current_tenant = tenant
+
+        # Route the real auth/permission machinery (libs.login.current_user, consumed
+        # fresh by `login_required`/`edit_permission_required`/`with_current_user` on
+        # every request) at this mock account instead of resolving a real session from
+        # the bearer token. CSRF enforcement is bypassed the same way, since it is
+        # orthogonal to the app-edit-permission gate under test here.
+        monkeypatch.setattr("libs.login.current_user", LocalProxy(lambda: account))
+        monkeypatch.setattr("libs.login.check_csrf_token", lambda *args, **kwargs: None)
+
         return account
 
     @pytest.fixture
@@ -72,9 +87,9 @@ class TestFeedbackExportApi:
         conversation_id = str(uuid.uuid4())
         message_id = str(uuid.uuid4())
 
-        # Mock feedback data
+        # Mock feedback data. `id`/`created_at` are DB-populated (init=False on the
+        # model), so they are assigned after construction rather than passed in.
         user_feedback = MessageFeedback(
-            id=str(uuid.uuid4()),
             app_id=app_id,
             conversation_id=conversation_id,
             message_id=message_id,
@@ -83,11 +98,11 @@ class TestFeedbackExportApi:
             content=None,
             from_end_user_id=str(uuid.uuid4()),
             from_account_id=None,
-            created_at=naive_utc_now(),
         )
+        user_feedback.id = str(uuid.uuid4())
+        user_feedback.created_at = naive_utc_now()
 
         admin_feedback = MessageFeedback(
-            id=str(uuid.uuid4()),
             app_id=app_id,
             conversation_id=conversation_id,
             message_id=message_id,
@@ -96,8 +111,9 @@ class TestFeedbackExportApi:
             content="The response was not helpful",
             from_end_user_id=None,
             from_account_id=str(uuid.uuid4()),
-            created_at=naive_utc_now(),
         )
+        admin_feedback.id = str(uuid.uuid4())
+        admin_feedback.created_at = naive_utc_now()
 
         # Mock message and conversation
         mock_message = SimpleNamespace(
@@ -150,8 +166,6 @@ class TestFeedbackExportApi:
         mock_export_feedbacks = mock.Mock(return_value="mock csv response")
         monkeypatch.setattr(FeedbackService, "export_feedbacks", mock_export_feedbacks)
 
-        monkeypatch.setattr(message_api, "current_user", mock_account)
-
         # Set user role
         mock_account.role = role
 
@@ -189,14 +203,14 @@ class TestFeedbackExportApi:
         mock_csv_content += f"{sample_feedback_data['conversation'].id},{sample_feedback_data['message'].query},"
         mock_csv_content += f"{sample_feedback_data['message'].answer},👍,\n"
 
-        mock_response = mock.Mock()
-        mock_response.headers = {"Content-Type": "text/csv; charset=utf-8-sig"}
-        mock_response.data = mock_csv_content.encode("utf-8")
+        # `export_feedbacks` returns a real `flask.Response` (see
+        # `FeedbackService.export_feedbacks`); flask-restx passes a `Response`
+        # instance through as-is, but marshals anything else through the
+        # registered `TextFileResponse` schema, so a plain `Mock` here would 500.
+        mock_response = Response(mock_csv_content, mimetype="text/csv; charset=utf-8-sig")
 
         mock_export_feedbacks = mock.Mock(return_value=mock_response)
         monkeypatch.setattr(FeedbackService, "export_feedbacks", mock_export_feedbacks)
-
-        monkeypatch.setattr(message_api, "current_user", mock_account)
 
         response = test_client.get(
             f"/console/api/apps/{mock_app_model.id}/feedbacks/export",
@@ -239,14 +253,10 @@ class TestFeedbackExportApi:
             ],
         }
 
-        mock_response = mock.Mock()
-        mock_response.headers = {"Content-Type": "application/json; charset=utf-8"}
-        mock_response.data = json.dumps(mock_json_response).encode("utf-8")
+        mock_response = Response(json.dumps(mock_json_response), mimetype="application/json")
 
         mock_export_feedbacks = mock.Mock(return_value=mock_response)
         monkeypatch.setattr(FeedbackService, "export_feedbacks", mock_export_feedbacks)
-
-        monkeypatch.setattr(message_api, "current_user", mock_account)
 
         response = test_client.get(
             f"/console/api/apps/{mock_app_model.id}/feedbacks/export",
@@ -269,8 +279,6 @@ class TestFeedbackExportApi:
         mock_export_feedbacks = mock.Mock(return_value="mock filtered response")
         monkeypatch.setattr(FeedbackService, "export_feedbacks", mock_export_feedbacks)
 
-        monkeypatch.setattr(message_api, "current_user", mock_account)
-
         # Test with multiple filters
         response = test_client.get(
             f"/console/api/apps/{mock_app_model.id}/feedbacks/export",
@@ -287,12 +295,15 @@ class TestFeedbackExportApi:
 
         assert response.status_code == 200
 
-        # Verify service was called with correct parameters
+        # Verify service was called with correct parameters. `from_source`/`rating`
+        # arrive as the raw query-string literals (`FeedbackExportQuery` validates
+        # them as `Literal[...]` strings, not the `FeedbackFromSource`/`FeedbackRating`
+        # enums), and `app_id` is passed positionally by the controller.
         mock_export_feedbacks.assert_called_once_with(
-            mock.ANY,
-            app_id=mock_app_model.id,
-            from_source=FeedbackFromSource.USER,
-            rating=FeedbackRating.DISLIKE,
+            mock_app_model.id,
+            session=mock.ANY,
+            from_source="user",
+            rating="dislike",
             has_comment=True,
             start_date="2024-01-01",
             end_date="2024-12-31",
@@ -311,8 +322,6 @@ class TestFeedbackExportApi:
         # Mock the service to raise ValueError for invalid date
         mock_export_feedbacks = mock.Mock(side_effect=ValueError("Invalid date format"))
         monkeypatch.setattr(FeedbackService, "export_feedbacks", mock_export_feedbacks)
-
-        monkeypatch.setattr(message_api, "current_user", mock_account)
 
         response = test_client.get(
             f"/console/api/apps/{mock_app_model.id}/feedbacks/export",
@@ -336,8 +345,6 @@ class TestFeedbackExportApi:
         # Mock the service to raise an exception
         mock_export_feedbacks = mock.Mock(side_effect=Exception("Database connection failed"))
         monkeypatch.setattr(FeedbackService, "export_feedbacks", mock_export_feedbacks)
-
-        monkeypatch.setattr(message_api, "current_user", mock_account)
 
         response = test_client.get(
             f"/console/api/apps/{mock_app_model.id}/feedbacks/export",
