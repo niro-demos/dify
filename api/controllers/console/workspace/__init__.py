@@ -35,7 +35,13 @@ def plugin_permission_required(
                 )
 
                 if not permission:
-                    # no permission set, allow access for everyone
+                    # No TenantPluginPermission row exists yet for this tenant -- this is
+                    # the out-of-the-box default, not an admin opt-in. Default-deny to
+                    # admins/owners for any gated action, mirroring the ADMINS case below,
+                    # so plugin install/debug stays restricted until an owner explicitly
+                    # relaxes it to EVERYONE via the permission settings.
+                    if (install_required or debug_required) and not user.is_admin_or_owner:
+                        raise Forbidden()
                     return view(*args, **kwargs)
 
                 if install_required:
