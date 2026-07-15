@@ -4,20 +4,24 @@ from __future__ import annotations
 
 import builtins
 import importlib
+import sys
+from collections.abc import Generator
 from contextlib import ExitStack, contextmanager
 from inspect import unwrap
 from types import ModuleType, SimpleNamespace
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
-from flask import Flask
+from flask import Flask, g
 from flask.views import MethodView
+from werkzeug.exceptions import Forbidden
 
+from configs import dify_config as global_dify_config
 from core.tools.entities.api_entities import ToolProviderApiEntity as CoreToolProviderApiEntity
 from core.tools.entities.common_entities import I18nObject
 from core.tools.entities.tool_entities import ToolParameter
-from models import Account
-from models.account import TenantAccountRole
+from models import Account, Tenant
+from models.account import AccountStatus, TenantAccountRole
 
 if not hasattr(builtins, "MethodView"):
     builtins.MethodView = MethodView  # type: ignore[attr-defined]
@@ -70,6 +74,15 @@ def controller_module(monkeypatch: pytest.MonkeyPatch):
             for target, value in patch_targets:
                 stack.enter_context(patch(target, value))
             with _mock_db():
+                # Resolving a "controllers.console.wraps.*" patch target above forces
+                # Python to import the *parent* `controllers.console` package first
+                # (patch targets are resolved patch-by-patch, not all at once), and
+                # that package eagerly imports every controller submodule --
+                # including this one -- as a side effect. That real, undecorated-noop
+                # import can land in sys.modules before every patch in the loop above
+                # has been applied, so it must be evicted here to force the
+                # re-execution that actually picks up the now-fully-active patches.
+                sys.modules.pop(module_name, None)
                 _CONTROLLER_MODULE = importlib.import_module(module_name)
 
     module = _CONTROLLER_MODULE
@@ -673,3 +686,153 @@ def test_resolve_identity_mode_off_is_passthrough_when_not_enterprise(
     monkeypatch.setattr(controller_module.dify_config, "ENTERPRISE_ENABLED", False)
 
     assert controller_module._resolve_identity_mode(None, current=identity_mode.OFF) == identity_mode.OFF
+
+
+# --- TC-0956D162: preview/test-remote endpoints must require admin/owner ---
+#
+# `controller_module` above deliberately neutralizes auth decorators (setup_required,
+# login_required, is_admin_or_owner_required, ...) at import time so the rest of this
+# file can exercise business logic in isolation. That is the opposite of what these
+# tests need: they exist specifically to prove the RBAC gate is wired onto
+# ToolApiProviderGetRemoteSchemaApi.get and ToolApiProviderPreviousTestApi.post, the
+# same way it already is on the sibling persistence endpoints (ToolApiProviderAddApi
+# et al). So instead of the shared fixture, we import a fresh, genuinely-decorated
+# copy of the module for just these tests.
+
+_TOOL_PROVIDERS_MODULE = "controllers.console.workspace.tool_providers"
+
+
+@contextmanager
+def _import_tool_providers_with_real_decorators() -> Generator[ModuleType]:
+    """Import tool_providers.py with its real (unpatched) auth decorators.
+
+    Evicts any cached copy of the module, imports a fresh one (nothing here
+    patches controllers.console.wraps, so the decorators bind for real), then
+    restores whatever was cached in sys.modules beforehand so this never
+    leaks a differently-decorated module object into the `controller_module`
+    fixture or any other test in this session.
+    """
+    original = sys.modules.pop(_TOOL_PROVIDERS_MODULE, None)
+    try:
+        yield importlib.import_module(_TOOL_PROVIDERS_MODULE)
+    finally:
+        sys.modules.pop(_TOOL_PROVIDERS_MODULE, None)
+        if original is not None:
+            sys.modules[_TOOL_PROVIDERS_MODULE] = original
+
+
+def _member_account(role: TenantAccountRole, tenant_id: str = "tenant-authz") -> Account:
+    account = Account(name="Member", email=f"{role}@example.com", status=AccountStatus.ACTIVE)
+    account.id = f"account-{role}"
+    account.role = role
+    # Bypass the DB-backed `current_tenant` setter; the getter only reads `.id`.
+    tenant = Tenant(name="Authz Test Tenant")
+    tenant.id = tenant_id
+    account._current_tenant = tenant
+    return account
+
+
+@pytest.fixture
+def _legacy_role_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise the legacy (non-enterprise) role gate that `is_admin_or_owner_required`
+    enforces. `rbac_permission_required` is a no-op in this mode (and vice versa when
+    RBAC_ENABLED=True) -- either decorator alone must be sufficient to reject a
+    low-privileged member, since the finding's fix adds both.
+    """
+    monkeypatch.setattr(global_dify_config, "RBAC_ENABLED", False)
+    monkeypatch.setattr(global_dify_config, "EDITION", "CLOUD")
+    monkeypatch.setattr(global_dify_config, "LOGIN_DISABLED", True)
+
+
+@pytest.mark.usefixtures("_legacy_role_gate")
+class TestApiPreviewEndpointsRequireAdminOrOwner:
+    """Regression test for TC-0956D162.
+
+    Invariant: only workspace owners/admins may trigger a server-side outbound
+    fetch through the API-tool-provider preview/test-remote flow -- the same
+    gate already enforced on ToolApiProviderAddApi/UpdateApi/DeleteApi.
+    """
+
+    def test_remote_schema_rejects_normal_member(self, app: Flask, monkeypatch: pytest.MonkeyPatch):
+        account = _member_account(TenantAccountRole.NORMAL)
+        with _import_tool_providers_with_real_decorators() as module:
+            service_mock = MagicMock(return_value={"schema": "leaked-schema"})
+            monkeypatch.setattr(module.ApiToolManageService, "get_api_tool_provider_remote_schema", service_mock)
+
+            with app.test_request_context("/remote?url=http://example.com/"):
+                g._login_user = account
+                with pytest.raises(Forbidden):
+                    module.ToolApiProviderGetRemoteSchemaApi().get()
+
+            service_mock.assert_not_called()
+
+    def test_remote_schema_rejects_dataset_operator(self, app: Flask, monkeypatch: pytest.MonkeyPatch):
+        account = _member_account(TenantAccountRole.DATASET_OPERATOR)
+        with _import_tool_providers_with_real_decorators() as module:
+            service_mock = MagicMock(return_value={"schema": "leaked-schema"})
+            monkeypatch.setattr(module.ApiToolManageService, "get_api_tool_provider_remote_schema", service_mock)
+
+            with app.test_request_context("/remote?url=http://example.com/"):
+                g._login_user = account
+                with pytest.raises(Forbidden):
+                    module.ToolApiProviderGetRemoteSchemaApi().get()
+
+            service_mock.assert_not_called()
+
+    def test_remote_schema_allows_owner(self, app: Flask, monkeypatch: pytest.MonkeyPatch):
+        """Control: the legitimate admin/owner request must still succeed, proving a
+        rejection above is the invariant, not a broken test setup."""
+        account = _member_account(TenantAccountRole.OWNER)
+        with _import_tool_providers_with_real_decorators() as module:
+            service_mock = MagicMock(return_value={"schema": "real-schema"})
+            monkeypatch.setattr(module.ApiToolManageService, "get_api_tool_provider_remote_schema", service_mock)
+
+            with app.test_request_context("/remote?url=http://example.com/"):
+                g._login_user = account
+                resp = module.ToolApiProviderGetRemoteSchemaApi().get()
+
+            assert resp == {"schema": "real-schema"}
+            service_mock.assert_called_once()
+
+    def test_preview_test_rejects_normal_member(self, app: Flask, monkeypatch: pytest.MonkeyPatch):
+        account = _member_account(TenantAccountRole.NORMAL)
+        with _import_tool_providers_with_real_decorators() as module:
+            service_mock = MagicMock(return_value={"result": "leaked-http-response-body"})
+            monkeypatch.setattr(module.ApiToolManageService, "test_api_tool_preview", service_mock)
+
+            payload = {
+                "provider_name": "p",
+                "tool_name": "getSpec",
+                "credentials": {"auth_type": "none"},
+                "parameters": {},
+                "schema_type": "openapi",
+                "schema": "{}",
+            }
+            with app.test_request_context("/test/pre", method="POST", json=payload):
+                g._login_user = account
+                with pytest.raises(Forbidden):
+                    module.ToolApiProviderPreviousTestApi().post()
+
+            service_mock.assert_not_called()
+
+    def test_preview_test_allows_owner(self, app: Flask, monkeypatch: pytest.MonkeyPatch):
+        """Control: the legitimate admin/owner request must still succeed."""
+        account = _member_account(TenantAccountRole.OWNER)
+        with _import_tool_providers_with_real_decorators() as module:
+            service_mock = MagicMock(return_value={"result": "real-http-response-body"})
+            monkeypatch.setattr(module.ApiToolManageService, "test_api_tool_preview", service_mock)
+
+            payload = {
+                "provider_name": "p",
+                "tool_name": "getSpec",
+                "credentials": {"auth_type": "none"},
+                "parameters": {},
+                "schema_type": "openapi",
+                "schema": "{}",
+            }
+            with app.test_request_context("/test/pre", method="POST", json=payload):
+                g._login_user = account
+                resp = module.ToolApiProviderPreviousTestApi().post()
+
+            assert resp == {"result": "real-http-response-body"}
+            service_mock.assert_called_once()
