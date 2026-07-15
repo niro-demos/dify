@@ -117,6 +117,24 @@ def _enforce_snippet_tag_rbac_if_needed(tag_type: TagType | str | None) -> None:
     )
 
 
+def _require_tag_permission(current_user: Account, tag_type: TagType) -> None:
+    """
+    Ensure the current account is allowed to create/bind/unbind tags of ``tag_type``.
+
+    Knowledge-base tags remain available to dataset editors (including the
+    ``dataset_operator`` role), matching that role's scoped remit. All other tag
+    types (app, snippet) manage tenant-wide, cross-resource metadata outside that
+    scope, so they require full edit permission -- ``is_dataset_editor`` must not
+    be accepted as a substitute for them.
+    """
+    if tag_type == TagType.KNOWLEDGE:
+        if not (current_user.has_edit_permission or current_user.is_dataset_editor):
+            raise Forbidden()
+    else:
+        if not current_user.has_edit_permission:
+            raise Forbidden()
+
+
 def _enforce_snippet_tag_rbac_by_tag_id(tag_id: str) -> None:
     if not dify_config.RBAC_ENABLED:
         return
@@ -148,11 +166,8 @@ class TagListApi(Resource):
     @account_initialization_required
     @with_current_user
     def post(self, current_user: Account):
-        # Allow users with edit permission, or dataset editors (including dataset operators).
-        if not (current_user.has_edit_permission or current_user.is_dataset_editor):
-            raise Forbidden()
-
         payload = TagBasePayload.model_validate(console_ns.payload or {})
+        _require_tag_permission(current_user, payload.type)
         _enforce_snippet_tag_rbac_if_needed(payload.type)
         tag = TagService.save_tags(SaveTagPayload(name=payload.name, type=payload.type), db.session())
 
@@ -201,21 +216,9 @@ class TagUpdateDeleteApi(Resource):
         return "", 204
 
 
-def _require_tag_binding_edit_permission(current_user: Account) -> None:
-    """
-    Ensure the current account can edit tag bindings.
-
-    Tag binding operations are allowed for users who can edit resources (app/dataset) within the current tenant.
-    """
-    # The role of the current user in the ta table must be admin, owner, editor, or dataset_operator
-    if not (current_user.has_edit_permission or current_user.is_dataset_editor):
-        raise Forbidden()
-
-
 def _create_tag_bindings(current_user: Account) -> tuple[dict[str, str], int]:
-    _require_tag_binding_edit_permission(current_user)
-
     payload = TagBindingPayload.model_validate(console_ns.payload or {})
+    _require_tag_permission(current_user, payload.type)
     _enforce_snippet_tag_rbac_if_needed(payload.type)
     TagService.save_tag_binding(
         TagBindingCreatePayload(
@@ -229,9 +232,8 @@ def _create_tag_bindings(current_user: Account) -> tuple[dict[str, str], int]:
 
 
 def _remove_tag_bindings(current_user: Account) -> tuple[dict[str, str], int]:
-    _require_tag_binding_edit_permission(current_user)
-
     payload = TagBindingRemovePayload.model_validate(console_ns.payload or {})
+    _require_tag_permission(current_user, payload.type)
     _enforce_snippet_tag_rbac_if_needed(payload.type)
     TagService.delete_tag_binding(
         TagBindingDeletePayload(

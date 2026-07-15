@@ -66,6 +66,24 @@ def readonly_user():
 
 
 @pytest.fixture
+def dataset_operator_user():
+    """A workspace member scoped to dataset/knowledge-base operations only.
+
+    Has ``is_dataset_editor`` (and thus ``is_dataset_operator``) but not
+    ``has_edit_permission`` -- this role must be denied on app-management
+    surfaces such as app-type tags (TC-375B34DE).
+    """
+    account = Account(
+        name="Dataset Operator User",
+        email="dataset-operator@example.com",
+        status=AccountStatus.ACTIVE,
+    )
+    account.id = "user-3"
+    account.role = TenantAccountRole.DATASET_OPERATOR
+    return account
+
+
+@pytest.fixture
 def tag():
     tag = MagicMock()
     tag.id = "tag-1"
@@ -189,7 +207,7 @@ class TestTagListApi:
         api = TagListApi()
         method = unwrap(api.post)
 
-        payload = {"name": "x"}
+        payload = {"name": "x", "type": "app"}
 
         with app.test_request_context("/", json=payload):
             with (
@@ -197,6 +215,51 @@ class TestTagListApi:
             ):
                 with pytest.raises(Forbidden):
                     method(api, readonly_user)
+
+    def test_post_app_tag_forbidden_for_dataset_operator(self, app: Flask, dataset_operator_user, tag, payload_patch):
+        """TC-375B34DE: dataset_operator is scoped to knowledge-base operations and must not
+        be able to create app-management tags (type="app"), even though it is a dataset
+        editor."""
+        api = TagListApi()
+        method = unwrap(api.post)
+
+        payload = {"name": "operator-app-tag", "type": "app"}
+
+        with app.test_request_context("/", json=payload):
+            with (
+                payload_patch(payload),
+                patch(
+                    "controllers.console.tag.tags.TagService.save_tags",
+                    return_value=tag,
+                ) as save_tags_mock,
+            ):
+                with pytest.raises(Forbidden):
+                    method(api, dataset_operator_user)
+
+        save_tags_mock.assert_not_called()
+
+    def test_post_knowledge_tag_allowed_for_dataset_operator(
+        self, app: Flask, dataset_operator_user, tag, payload_patch
+    ):
+        """Control: dataset_operator remains allowed to manage knowledge-base tags -- the
+        surface their role is scoped to."""
+        api = TagListApi()
+        method = unwrap(api.post)
+
+        payload = {"name": "operator-knowledge-tag", "type": "knowledge"}
+
+        with app.test_request_context("/", json=payload):
+            with (
+                payload_patch(payload),
+                patch(
+                    "controllers.console.tag.tags.TagService.save_tags",
+                    return_value=tag,
+                ) as save_tags_mock,
+            ):
+                result, status = method(api, dataset_operator_user)
+
+        save_tags_mock.assert_called_once()
+        assert status == 200
 
 
 class TestTagUpdateDeleteApi:
@@ -333,12 +396,51 @@ class TestTagBindingCollectionApi:
         api = TagBindingCollectionApi()
         method = unwrap(api.post)
 
-        with app.test_request_context("/", json={}):
+        payload = {"tag_ids": ["tag-1"], "target_id": "target-1", "type": "app"}
+
+        with app.test_request_context("/", json=payload):
             with (
-                payload_patch({}),
+                payload_patch(payload),
             ):
                 with pytest.raises(Forbidden):
                     method(api, readonly_user)
+
+    def test_create_app_binding_forbidden_for_dataset_operator(self, app: Flask, dataset_operator_user, payload_patch):
+        """TC-375B34DE: dataset_operator must not be able to bind app-type tags to apps,
+        even though it is a dataset editor."""
+        api = TagBindingCollectionApi()
+        method = unwrap(api.post)
+
+        payload = {"tag_ids": ["tag-1"], "target_id": "app-1", "type": "app"}
+
+        with app.test_request_context("/", json=payload):
+            with (
+                payload_patch(payload),
+                patch("controllers.console.tag.tags.TagService.save_tag_binding") as save_mock,
+            ):
+                with pytest.raises(Forbidden):
+                    method(api, dataset_operator_user)
+
+        save_mock.assert_not_called()
+
+    def test_create_knowledge_binding_allowed_for_dataset_operator(
+        self, app: Flask, dataset_operator_user, payload_patch
+    ):
+        """Control: dataset_operator remains allowed to bind knowledge-base tags."""
+        api = TagBindingCollectionApi()
+        method = unwrap(api.post)
+
+        payload = {"tag_ids": ["tag-1"], "target_id": "dataset-1", "type": "knowledge"}
+
+        with app.test_request_context("/", json=payload):
+            with (
+                payload_patch(payload),
+                patch("controllers.console.tag.tags.TagService.save_tag_binding") as save_mock,
+            ):
+                result, status = method(api, dataset_operator_user)
+
+        save_mock.assert_called_once()
+        assert status == 200
 
 
 class TestTagBindingRemoveApi:
@@ -369,12 +471,51 @@ class TestTagBindingRemoveApi:
         api = TagBindingRemoveApi()
         method = unwrap(api.post)
 
-        with app.test_request_context("/", json={}):
+        payload = {"tag_ids": ["tag-1"], "target_id": "target-1", "type": "app"}
+
+        with app.test_request_context("/", json=payload):
             with (
-                payload_patch({}),
+                payload_patch(payload),
             ):
                 with pytest.raises(Forbidden):
                     method(api, readonly_user)
+
+    def test_remove_app_binding_forbidden_for_dataset_operator(self, app: Flask, dataset_operator_user, payload_patch):
+        """TC-375B34DE: dataset_operator must not be able to remove app-type tag bindings,
+        even though it is a dataset editor."""
+        api = TagBindingRemoveApi()
+        method = unwrap(api.post)
+
+        payload = {"tag_ids": ["tag-1"], "target_id": "app-1", "type": "app"}
+
+        with app.test_request_context("/", json=payload):
+            with (
+                payload_patch(payload),
+                patch("controllers.console.tag.tags.TagService.delete_tag_binding") as delete_mock,
+            ):
+                with pytest.raises(Forbidden):
+                    method(api, dataset_operator_user)
+
+        delete_mock.assert_not_called()
+
+    def test_remove_knowledge_binding_allowed_for_dataset_operator(
+        self, app: Flask, dataset_operator_user, payload_patch
+    ):
+        """Control: dataset_operator remains allowed to remove knowledge-base tag bindings."""
+        api = TagBindingRemoveApi()
+        method = unwrap(api.post)
+
+        payload = {"tag_ids": ["tag-1"], "target_id": "dataset-1", "type": "knowledge"}
+
+        with app.test_request_context("/", json=payload):
+            with (
+                payload_patch(payload),
+                patch("controllers.console.tag.tags.TagService.delete_tag_binding") as delete_mock,
+            ):
+                result, status = method(api, dataset_operator_user)
+
+        delete_mock.assert_called_once()
+        assert status == 200
 
 
 class TestTagResponseModel:
