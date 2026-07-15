@@ -41,7 +41,9 @@ def disable_annotation_reply_task(job_id: str, app_id: str, tenant_id: str):
             return
 
         disable_app_annotation_key = f"disable_app_annotation_{str(app_id)}"
-        disable_app_annotation_job_key = f"disable_app_annotation_job_{str(job_id)}"
+        # Must match the app_id-scoped key AppAnnotationService.disable_app_annotation
+        # wrote when it enqueued this job (see that method for why app_id is included).
+        disable_app_annotation_job_key = f"disable_app_annotation_job_{str(app_id)}_{str(job_id)}"
 
         try:
             dataset = Dataset(
@@ -73,7 +75,7 @@ def disable_annotation_reply_task(job_id: str, app_id: str, tenant_id: str):
         except Exception as e:
             logger.exception("Annotation batch deleted index failed")
             redis_client.setex(disable_app_annotation_job_key, 600, "error")
-            disable_app_annotation_error_key = f"disable_app_annotation_error_{str(job_id)}"
+            disable_app_annotation_error_key = f"disable_app_annotation_error_{str(app_id)}_{str(job_id)}"
             redis_client.setex(disable_app_annotation_error_key, 600, str(e))
         finally:
             redis_client.delete(disable_app_annotation_key)

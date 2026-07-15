@@ -162,7 +162,11 @@ class AnnotationReplyActionStatusApi(Resource):
     def get(self, app_model: App, job_id: UUID, action: str):
         """Get the status of an annotation reply action job."""
         job_id_str = str(job_id)
-        app_annotation_job_key = f"{action}_app_annotation_job_{job_id_str}"
+        # Scope the lookup by the authenticated caller's own app_model.id so a
+        # job_id belonging to a different app/tenant misses the cache (falls into
+        # the "job does not exist" branch below) instead of leaking that other
+        # app's job status/error. Must match the key AppAnnotationService writes.
+        app_annotation_job_key = f"{action}_app_annotation_job_{app_model.id}_{job_id_str}"
         cache_result = redis_client.get(app_annotation_job_key)
         if cache_result is None:
             raise ValueError("The job does not exist.")
@@ -170,7 +174,7 @@ class AnnotationReplyActionStatusApi(Resource):
         job_status = cache_result.decode()
         error_msg = ""
         if job_status == "error":
-            app_annotation_error_key = f"{action}_app_annotation_error_{job_id_str}"
+            app_annotation_error_key = f"{action}_app_annotation_error_{app_model.id}_{job_id_str}"
             error_result = redis_client.get(app_annotation_error_key)
             if error_result is not None:
                 error_msg = error_result.decode()

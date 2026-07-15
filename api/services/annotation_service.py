@@ -181,7 +181,10 @@ class AppAnnotationService:
 
         # async job
         job_id = str(uuid.uuid4())
-        enable_app_annotation_job_key = f"enable_app_annotation_job_{str(job_id)}"
+        # Scope the job key by app_id so a job started by one app can never be
+        # polled by another app/tenant that merely guesses or reuses the job_id
+        # (see AnnotationReplyActionStatusApi.get, which must build this same key).
+        enable_app_annotation_job_key = f"enable_app_annotation_job_{str(app_id)}_{str(job_id)}"
         # send batch add segments task
         redis_client.setnx(enable_app_annotation_job_key, "waiting")
         current_user, current_tenant_id = current_account_with_tenant()
@@ -206,7 +209,8 @@ class AppAnnotationService:
 
         # async job
         job_id = str(uuid.uuid4())
-        disable_app_annotation_job_key = f"disable_app_annotation_job_{str(job_id)}"
+        # Scope the job key by app_id -- see enable_app_annotation for why.
+        disable_app_annotation_job_key = f"disable_app_annotation_job_{str(app_id)}_{str(job_id)}"
         # send batch add segments task
         redis_client.setnx(disable_app_annotation_job_key, "waiting")
         disable_annotation_reply_task.delay(str(job_id), app_id, current_tenant_id)

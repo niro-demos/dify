@@ -251,6 +251,68 @@ class TestAnnotationReplyActionStatusApi:
         assert response["error_msg"] == "oops"
 
 
+class TestAnnotationReplyActionStatusApiCrossTenantIsolation:
+    """Regression test for TC-797298A6.
+
+    Invariant: an annotation-reply job's status/error is scoped to the app
+    that created it. An app that merely knows another app's job_id must not
+    be able to read that job's status, even though both apps hold valid
+    Service API credentials.
+
+    The Redis stand-in below is a plain dict keyed by whatever string each
+    side computes, so this test exercises the *real* key-construction logic
+    in both the write path (AppAnnotationService.enable_app_annotation) and
+    the read path (AnnotationReplyActionStatusApi.get) rather than asserting
+    on a hardcoded key format.
+    """
+
+    def test_job_status_is_not_readable_by_a_different_app(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        store: dict[str, bytes] = {}
+
+        def _get(key: str) -> bytes | None:
+            return store.get(key)
+
+        def _setnx(key: str, value: str) -> bool:
+            if key in store:
+                return False
+            store[key] = value.encode()
+            return True
+
+        monkeypatch.setattr(redis_client, "get", _get)
+        monkeypatch.setattr(redis_client, "setnx", _setnx)
+        monkeypatch.setattr(
+            "services.annotation_service.current_account_with_tenant",
+            lambda: (SimpleNamespace(id="user-a"), "tenant-a"),
+        )
+        monkeypatch.setattr("services.annotation_service.enable_annotation_reply_task", Mock())
+
+        args = {
+            "score_threshold": 0.8,
+            "embedding_provider_name": "openai",
+            "embedding_model_name": "text-embedding-ada-002",
+        }
+
+        # Org A starts an annotation-reply enable job for its own app.
+        result = AppAnnotationService.enable_app_annotation(args, "app-a")
+        job_id = result["job_id"]
+
+        api = AnnotationReplyActionStatusApi()
+        handler = unwrap(api.get)
+
+        # Positive control: Org A polling its own job succeeds -- proves the
+        # setup is healthy, so the failure below is the cross-tenant bug, not
+        # a broken test.
+        response, status = handler(api, app_model=SimpleNamespace(id="app-a"), job_id=job_id, action="enable")
+        assert status == 200
+        assert response["job_id"] == job_id
+
+        # Attack: Org B, a wholly separate app/tenant with no relationship to
+        # Org A, polls the SAME job_id with its own, legitimately-issued
+        # app-scoped credentials.
+        with pytest.raises(ValueError, match="does not exist"):
+            handler(api, app_model=SimpleNamespace(id="app-b"), job_id=job_id, action="enable")
+
+
 class TestAnnotationListApi:
     def test_get_uses_defaults(self, app: Flask, monkeypatch: pytest.MonkeyPatch) -> None:
         annotation = SimpleNamespace(id="a1", question="q", content="a", created_at=0)
