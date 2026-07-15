@@ -20,8 +20,10 @@ from controllers.console.datasets.datasets_document import (
     DocumentIndexingEstimateApi,
     DocumentIndexingStatusApi,
     DocumentMetadataApi,
+    DocumentPauseApi,
     DocumentPipelineExecutionLogApi,
     DocumentProcessingApi,
+    DocumentRecoverApi,
     DocumentRenameApi,
     DocumentRetryApi,
     DocumentStatusApi,
@@ -793,9 +795,10 @@ class TestDocumentStatusApi:
 
 
 class TestDocumentRetryApi:
-    def test_retry_archived_document_skipped(self, app: Flask, patch_tenant, patch_dataset):
+    def test_retry_archived_document_skipped(self, app: Flask, patch_tenant, patch_dataset, patch_permission):
         api = DocumentRetryApi()
         method = inspect.unwrap(api.post)
+        user, _ = patch_tenant
 
         payload = {"document_ids": ["doc-1"]}
 
@@ -816,14 +819,15 @@ class TestDocumentRetryApi:
                 "controllers.console.datasets.datasets_document.DocumentService.retry_document",
             ) as retry_mock,
         ):
-            resp, status = method(api, "ds-1")
+            resp, status = method(api, user, "ds-1")
 
         assert status == 204
         retry_mock.assert_called_once_with("ds-1", [], ANY)
 
-    def test_retry_success(self, app: Flask, patch_tenant, patch_dataset):
+    def test_retry_success(self, app: Flask, patch_tenant, patch_dataset, patch_permission):
         api = DocumentRetryApi()
         method = inspect.unwrap(api.post)
+        user, _ = patch_tenant
 
         payload = {"document_ids": ["doc-1"]}
 
@@ -845,14 +849,15 @@ class TestDocumentRetryApi:
                 return_value=None,
             ) as retry_mock,
         ):
-            response, status = method(api, "ds-1")
+            response, status = method(api, user, "ds-1")
 
         assert status == 204
         retry_mock.assert_called_once_with("ds-1", [document], ANY)
 
-    def test_retry_skips_completed_document(self, app: Flask, patch_tenant, patch_dataset):
+    def test_retry_skips_completed_document(self, app: Flask, patch_tenant, patch_dataset, patch_permission):
         api = DocumentRetryApi()
         method = inspect.unwrap(api.post)
+        user, _ = patch_tenant
 
         payload = {"document_ids": ["doc-1"]}
 
@@ -870,16 +875,186 @@ class TestDocumentRetryApi:
                 return_value=None,
             ) as retry_mock,
         ):
-            response, status = method(api, "ds-1")
+            response, status = method(api, user, "ds-1")
 
         assert status == 204
         retry_mock.assert_called_once_with("ds-1", [], ANY)
 
+    def test_retry_dataset_not_found(self, app: Flask, patch_tenant):
+        api = DocumentRetryApi()
+        method = inspect.unwrap(api.post)
+        user, _ = patch_tenant
+
+        payload = {"document_ids": ["doc-1"]}
+
+        with (
+            app.test_request_context("/", json=payload),
+            patch.object(type(console_ns), "payload", payload),
+            patch(
+                "controllers.console.datasets.datasets_document.DatasetService.get_dataset",
+                return_value=None,
+            ),
+        ):
+            with pytest.raises(NotFound):
+                method(api, user, "ds-1")
+
+    def test_retry_cross_tenant_denied(self, app: Flask, patch_tenant, patch_dataset):
+        """Regression test for TC-BF68B0EE: a user from another tenant must not be able
+        to force re-indexing of another workspace's document by guessing its id."""
+        api = DocumentRetryApi()
+        method = inspect.unwrap(api.post)
+        user, _ = patch_tenant
+
+        payload = {"document_ids": ["doc-1"]}
+
+        with (
+            app.test_request_context("/", json=payload),
+            patch.object(type(console_ns), "payload", payload),
+            patch(
+                "controllers.console.datasets.datasets_document.DatasetService.check_dataset_permission",
+                side_effect=services.errors.account.NoPermissionError("no access"),
+            ),
+            patch(
+                "controllers.console.datasets.datasets_document.DocumentService.retry_document",
+            ) as retry_mock,
+        ):
+            with pytest.raises(Forbidden):
+                method(api, user, "ds-1")
+
+        retry_mock.assert_not_called()
+
+
+class TestDocumentPauseApi:
+    def test_pause_success(self, app: Flask, patch_tenant, patch_dataset, patch_permission, document):
+        api = DocumentPauseApi()
+        method = inspect.unwrap(api.patch)
+        user, tenant_id = patch_tenant
+
+        with (
+            app.test_request_context("/"),
+            patch(
+                "controllers.console.datasets.datasets_document.DocumentService.get_document",
+                return_value=document,
+            ),
+            patch(
+                "controllers.console.datasets.datasets_document.DocumentService.check_archived",
+                return_value=False,
+            ),
+            patch(
+                "controllers.console.datasets.datasets_document.DocumentService.pause_document",
+            ) as pause_mock,
+        ):
+            response, status = method(api, tenant_id, user, "ds-1", "doc-1")
+
+        assert status == 204
+        pause_mock.assert_called_once()
+
+    def test_pause_dataset_not_found(self, app: Flask, patch_tenant):
+        api = DocumentPauseApi()
+        method = inspect.unwrap(api.patch)
+        user, tenant_id = patch_tenant
+
+        with (
+            app.test_request_context("/"),
+            patch(
+                "controllers.console.datasets.datasets_document.DatasetService.get_dataset",
+                return_value=None,
+            ),
+        ):
+            with pytest.raises(NotFound):
+                method(api, tenant_id, user, "ds-1", "doc-1")
+
+    def test_pause_cross_tenant_denied(self, app: Flask, patch_tenant, patch_dataset):
+        """Regression test for TC-BF68B0EE: a user from another tenant must not be able
+        to pause another workspace's document by guessing its id."""
+        api = DocumentPauseApi()
+        method = inspect.unwrap(api.patch)
+        user, tenant_id = patch_tenant
+
+        with (
+            app.test_request_context("/"),
+            patch(
+                "controllers.console.datasets.datasets_document.DatasetService.check_dataset_permission",
+                side_effect=services.errors.account.NoPermissionError("no access"),
+            ),
+            patch(
+                "controllers.console.datasets.datasets_document.DocumentService.pause_document",
+            ) as pause_mock,
+        ):
+            with pytest.raises(Forbidden):
+                method(api, tenant_id, user, "ds-1", "doc-1")
+
+        pause_mock.assert_not_called()
+
+
+class TestDocumentRecoverApi:
+    def test_recover_success(self, app: Flask, patch_tenant, patch_dataset, patch_permission, document):
+        api = DocumentRecoverApi()
+        method = inspect.unwrap(api.patch)
+        user, tenant_id = patch_tenant
+
+        with (
+            app.test_request_context("/"),
+            patch(
+                "controllers.console.datasets.datasets_document.DocumentService.get_document",
+                return_value=document,
+            ),
+            patch(
+                "controllers.console.datasets.datasets_document.DocumentService.check_archived",
+                return_value=False,
+            ),
+            patch(
+                "controllers.console.datasets.datasets_document.DocumentService.recover_document",
+            ) as recover_mock,
+        ):
+            response, status = method(api, tenant_id, user, "ds-1", "doc-1")
+
+        assert status == 204
+        recover_mock.assert_called_once()
+
+    def test_recover_dataset_not_found(self, app: Flask, patch_tenant):
+        api = DocumentRecoverApi()
+        method = inspect.unwrap(api.patch)
+        user, tenant_id = patch_tenant
+
+        with (
+            app.test_request_context("/"),
+            patch(
+                "controllers.console.datasets.datasets_document.DatasetService.get_dataset",
+                return_value=None,
+            ),
+        ):
+            with pytest.raises(NotFound):
+                method(api, tenant_id, user, "ds-1", "doc-1")
+
+    def test_recover_cross_tenant_denied(self, app: Flask, patch_tenant, patch_dataset):
+        """Regression test for TC-BF68B0EE: a user from another tenant must not be able
+        to resume another workspace's document by guessing its id."""
+        api = DocumentRecoverApi()
+        method = inspect.unwrap(api.patch)
+        user, tenant_id = patch_tenant
+
+        with (
+            app.test_request_context("/"),
+            patch(
+                "controllers.console.datasets.datasets_document.DatasetService.check_dataset_permission",
+                side_effect=services.errors.account.NoPermissionError("no access"),
+            ),
+            patch(
+                "controllers.console.datasets.datasets_document.DocumentService.recover_document",
+            ) as recover_mock,
+        ):
+            with pytest.raises(Forbidden):
+                method(api, tenant_id, user, "ds-1", "doc-1")
+
+        recover_mock.assert_not_called()
+
 
 class TestDocumentPipelineExecutionLogApi:
-    def test_get_log_success(self, app: Flask, patch_tenant, patch_dataset):
+    def test_get_log_success(self, app: Flask, patch_tenant, patch_dataset, patch_permission, document):
         api = DocumentPipelineExecutionLogApi()
         method = inspect.unwrap(api.get)
+        user, tenant_id = patch_tenant
 
         log = MagicMock(
             datasource_info="{}",
@@ -892,16 +1067,48 @@ class TestDocumentPipelineExecutionLogApi:
             app.test_request_context("/"),
             patch(
                 "controllers.console.datasets.datasets_document.DocumentService.get_document",
-                return_value=MagicMock(),
+                return_value=document,
             ),
             patch(
                 "controllers.console.datasets.datasets_document.db.session.scalar",
                 return_value=log,
             ),
         ):
-            response, status = method(api, "ds-1", "doc-1")
+            response, status = method(api, tenant_id, user, "ds-1", "doc-1")
 
         assert status == 200
+
+    def test_get_log_dataset_not_found(self, app: Flask, patch_tenant):
+        api = DocumentPipelineExecutionLogApi()
+        method = inspect.unwrap(api.get)
+        user, tenant_id = patch_tenant
+
+        with (
+            app.test_request_context("/"),
+            patch(
+                "controllers.console.datasets.datasets_document.DatasetService.get_dataset",
+                return_value=None,
+            ),
+        ):
+            with pytest.raises(NotFound):
+                method(api, tenant_id, user, "ds-1", "doc-1")
+
+    def test_get_log_cross_tenant_denied(self, app: Flask, patch_tenant, patch_dataset):
+        """Regression test for TC-54AF95AB: a user from another tenant must not be able
+        to read another workspace's document pipeline execution log by guessing its id."""
+        api = DocumentPipelineExecutionLogApi()
+        method = inspect.unwrap(api.get)
+        user, tenant_id = patch_tenant
+
+        with (
+            app.test_request_context("/"),
+            patch(
+                "controllers.console.datasets.datasets_document.DatasetService.check_dataset_permission",
+                side_effect=services.errors.account.NoPermissionError("no access"),
+            ),
+        ):
+            with pytest.raises(Forbidden):
+                method(api, tenant_id, user, "ds-1", "doc-1")
 
 
 class TestDocumentGenerateSummaryApi:

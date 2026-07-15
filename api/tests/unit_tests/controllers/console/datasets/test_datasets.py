@@ -1162,16 +1162,19 @@ class TestDatasetUseCheckApi:
         method = unwrap(api.get)
 
         dataset_id = "dataset-id"
+        dataset = make_dataset(id=dataset_id)
 
         with (
             app.test_request_context(f"/datasets/{dataset_id}/use-check"),
+            patch.object(DatasetService, "get_dataset", return_value=dataset),
+            patch.object(DatasetService, "check_dataset_permission", return_value=None),
             patch.object(
                 DatasetService,
                 "dataset_use_check",
                 return_value=True,
             ),
         ):
-            result, status = method(api, dataset_id)
+            result, status = method(api, make_account(), dataset_id)
 
         assert status == 200
         assert result == {"is_using": True}
@@ -1181,19 +1184,56 @@ class TestDatasetUseCheckApi:
         method = unwrap(api.get)
 
         dataset_id = "dataset-id"
+        dataset = make_dataset(id=dataset_id)
 
         with (
             app.test_request_context(f"/datasets/{dataset_id}/use-check"),
+            patch.object(DatasetService, "get_dataset", return_value=dataset),
+            patch.object(DatasetService, "check_dataset_permission", return_value=None),
             patch.object(
                 DatasetService,
                 "dataset_use_check",
                 return_value=False,
             ),
         ):
-            result, status = method(api, dataset_id)
+            result, status = method(api, make_account(), dataset_id)
 
         assert status == 200
         assert result == {"is_using": False}
+
+    def test_get_dataset_not_found(self, app: Flask):
+        api = DatasetUseCheckApi()
+        method = unwrap(api.get)
+
+        dataset_id = "dataset-id"
+
+        with (
+            app.test_request_context(f"/datasets/{dataset_id}/use-check"),
+            patch.object(DatasetService, "get_dataset", return_value=None),
+        ):
+            with pytest.raises(NotFound):
+                method(api, make_account(), dataset_id)
+
+    def test_get_cross_tenant_denied(self, app: Flask):
+        """Regression test for TC-37EF8EF3: a user from another tenant must not be able
+        to read a dataset's usage-check status just by knowing its id."""
+        api = DatasetUseCheckApi()
+        method = unwrap(api.get)
+
+        dataset_id = "dataset-id"
+        other_tenant_dataset = make_dataset(id=dataset_id, tenant_id="other-tenant")
+
+        with (
+            app.test_request_context(f"/datasets/{dataset_id}/use-check"),
+            patch.object(DatasetService, "get_dataset", return_value=other_tenant_dataset),
+            patch.object(
+                DatasetService,
+                "check_dataset_permission",
+                side_effect=services.errors.account.NoPermissionError("no access"),
+            ),
+        ):
+            with pytest.raises(Forbidden):
+                method(api, make_account(), dataset_id)
 
 
 class TestDatasetQueryApi:
@@ -1911,14 +1951,18 @@ class TestDatasetEnableApiApi:
         api = DatasetEnableApiApi()
         method = unwrap(api.post)
 
+        dataset = make_dataset(id="dataset-1")
+
         with (
             app.test_request_context("/"),
+            patch.object(DatasetService, "get_dataset", return_value=dataset),
+            patch.object(DatasetService, "check_dataset_permission", return_value=None),
             patch(
                 "controllers.console.datasets.datasets.DatasetService.update_dataset_api_status",
                 return_value=None,
             ),
         ):
-            response, status = method(api, "dataset-1", "enable")
+            response, status = method(api, make_account(), "dataset-1", "enable")
 
         assert status == 200
         assert response["result"] == "success"
@@ -1927,17 +1971,52 @@ class TestDatasetEnableApiApi:
         api = DatasetEnableApiApi()
         method = unwrap(api.post)
 
+        dataset = make_dataset(id="dataset-1")
+
         with (
             app.test_request_context("/"),
+            patch.object(DatasetService, "get_dataset", return_value=dataset),
+            patch.object(DatasetService, "check_dataset_permission", return_value=None),
             patch(
                 "controllers.console.datasets.datasets.DatasetService.update_dataset_api_status",
                 return_value=None,
             ),
         ):
-            response, status = method(api, "dataset-1", "disable")
+            response, status = method(api, make_account(), "dataset-1", "disable")
 
         assert status == 200
         assert response["result"] == "success"
+
+    def test_get_dataset_not_found(self, app: Flask):
+        api = DatasetEnableApiApi()
+        method = unwrap(api.post)
+
+        with (
+            app.test_request_context("/"),
+            patch.object(DatasetService, "get_dataset", return_value=None),
+        ):
+            with pytest.raises(NotFound):
+                method(api, make_account(), "dataset-1", "enable")
+
+    def test_cross_tenant_denied(self, app: Flask):
+        """Regression test for TC-88274D93: a user from another tenant must not be able
+        to enable/disable another workspace's dataset Service API access."""
+        api = DatasetEnableApiApi()
+        method = unwrap(api.post)
+
+        other_tenant_dataset = make_dataset(id="dataset-1", tenant_id="other-tenant")
+
+        with (
+            app.test_request_context("/"),
+            patch.object(DatasetService, "get_dataset", return_value=other_tenant_dataset),
+            patch.object(
+                DatasetService,
+                "check_dataset_permission",
+                side_effect=services.errors.account.NoPermissionError("no access"),
+            ),
+        ):
+            with pytest.raises(Forbidden):
+                method(api, make_account(), "dataset-1", "enable")
 
 
 class TestDatasetApiBaseUrlApi:
@@ -2039,12 +2118,13 @@ class TestDatasetErrorDocs:
                 "controllers.console.datasets.datasets.DatasetService.get_dataset",
                 return_value=dataset,
             ),
+            patch.object(DatasetService, "check_dataset_permission", return_value=None),
             patch(
                 "controllers.console.datasets.datasets.DocumentService.get_error_documents_by_dataset_id",
                 return_value=[error_doc],
             ),
         ):
-            response, status = method(api, "dataset-1")
+            response, status = method(api, make_account(), "dataset-1")
 
         assert status == 200
         assert response["total"] == 1
@@ -2061,7 +2141,30 @@ class TestDatasetErrorDocs:
             ),
         ):
             with pytest.raises(NotFound):
-                method(api, "dataset-1")
+                method(api, make_account(), "dataset-1")
+
+    def test_get_cross_tenant_denied(self, app: Flask):
+        """Regression test for TC-37EF8EF3: a user from another tenant must not be able
+        to read another workspace's document-processing error log by guessing its dataset id."""
+        api = DatasetErrorDocs()
+        method = unwrap(api.get)
+
+        other_tenant_dataset = make_dataset(id="dataset-1", tenant_id="other-tenant")
+
+        with (
+            app.test_request_context("/"),
+            patch(
+                "controllers.console.datasets.datasets.DatasetService.get_dataset",
+                return_value=other_tenant_dataset,
+            ),
+            patch.object(
+                DatasetService,
+                "check_dataset_permission",
+                side_effect=services.errors.account.NoPermissionError("no access"),
+            ),
+        ):
+            with pytest.raises(Forbidden):
+                method(api, make_account(), "dataset-1")
 
 
 class TestDatasetPermissionUserListApi:
@@ -2127,12 +2230,13 @@ class TestDatasetAutoDisableLogApi:
                 "controllers.console.datasets.datasets.DatasetService.get_dataset",
                 return_value=dataset,
             ),
+            patch.object(DatasetService, "check_dataset_permission", return_value=None),
             patch(
                 "controllers.console.datasets.datasets.DatasetService.get_dataset_auto_disable_logs",
                 return_value=logs,
             ),
         ):
-            response, status = method(api, "dataset-1")
+            response, status = method(api, make_account(), "dataset-1")
 
         assert status == 200
         assert response == logs
@@ -2149,4 +2253,27 @@ class TestDatasetAutoDisableLogApi:
             ),
         ):
             with pytest.raises(NotFound):
-                method(api, "dataset-1")
+                method(api, make_account(), "dataset-1")
+
+    def test_get_cross_tenant_denied(self, app: Flask):
+        """Regression test for TC-37EF8EF3: a user from another tenant must not be able
+        to read another workspace's dataset auto-disable log by guessing its dataset id."""
+        api = DatasetAutoDisableLogApi()
+        method = unwrap(api.get)
+
+        other_tenant_dataset = make_dataset(id="dataset-1", tenant_id="other-tenant")
+
+        with (
+            app.test_request_context("/"),
+            patch(
+                "controllers.console.datasets.datasets.DatasetService.get_dataset",
+                return_value=other_tenant_dataset,
+            ),
+            patch.object(
+                DatasetService,
+                "check_dataset_permission",
+                side_effect=services.errors.account.NoPermissionError("no access"),
+            ),
+        ):
+            with pytest.raises(Forbidden):
+                method(api, make_account(), "dataset-1")

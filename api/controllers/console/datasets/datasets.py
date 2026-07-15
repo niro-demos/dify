@@ -758,8 +758,16 @@ class DatasetUseCheckApi(Resource):
     @login_required
     @account_initialization_required
     @rbac_permission_required(RBACResourceScope.DATASET, RBACPermission.DATASET_READONLY)
-    def get(self, dataset_id: UUID):
+    @with_current_user
+    def get(self, current_user: Account, dataset_id: UUID):
         dataset_id_str = str(dataset_id)
+        dataset = DatasetService.get_dataset(dataset_id_str, db.session())
+        if dataset is None:
+            raise NotFound("Dataset not found.")
+        try:
+            DatasetService.check_dataset_permission(dataset, current_user, db.session())
+        except services.errors.account.NoPermissionError as e:
+            raise Forbidden(str(e))
 
         dataset_is_using = DatasetService.dataset_use_check(dataset_id_str, db.session())
         return UsageCheckResponse(is_using=dataset_is_using).model_dump(mode="json"), 200
@@ -1114,8 +1122,16 @@ class DatasetEnableApiApi(Resource):
     @account_initialization_required
     @console_ns.response(200, "Success", console_ns.models[SimpleResultResponse.__name__])
     @rbac_permission_required(RBACResourceScope.DATASET, RBACPermission.DATASET_EDIT)
-    def post(self, dataset_id: UUID, status: str):
+    @with_current_user
+    def post(self, current_user: Account, dataset_id: UUID, status: str):
         dataset_id_str = str(dataset_id)
+        dataset = DatasetService.get_dataset(dataset_id_str, db.session())
+        if dataset is None:
+            raise NotFound("Dataset not found.")
+        try:
+            DatasetService.check_dataset_permission(dataset, current_user, db.session())
+        except services.errors.account.NoPermissionError as e:
+            raise Forbidden(str(e))
 
         DatasetService.update_dataset_api_status(dataset_id_str, status == "enable", db.session())
 
@@ -1184,11 +1200,16 @@ class DatasetErrorDocs(Resource):
     @login_required
     @account_initialization_required
     @rbac_permission_required(RBACResourceScope.DATASET, RBACPermission.DATASET_READONLY)
-    def get(self, dataset_id: UUID):
+    @with_current_user
+    def get(self, current_user: Account, dataset_id: UUID):
         dataset_id_str = str(dataset_id)
         dataset = DatasetService.get_dataset(dataset_id_str, db.session())
         if dataset is None:
             raise NotFound("Dataset not found.")
+        try:
+            DatasetService.check_dataset_permission(dataset, current_user, db.session())
+        except services.errors.account.NoPermissionError as e:
+            raise Forbidden(str(e))
         results = DocumentService.get_error_documents_by_dataset_id(dataset_id_str, db.session())
 
         return dump_response(ErrorDocsResponse, {"data": results, "total": len(results)}), 200
@@ -1241,10 +1262,15 @@ class DatasetAutoDisableLogApi(Resource):
     @login_required
     @account_initialization_required
     @rbac_permission_required(RBACResourceScope.DATASET, RBACPermission.DATASET_READONLY)
-    def get(self, dataset_id: UUID):
+    @with_current_user
+    def get(self, current_user: Account, dataset_id: UUID):
         dataset_id_str = str(dataset_id)
         dataset = DatasetService.get_dataset(dataset_id_str, db.session())
         if dataset is None:
             raise NotFound("Dataset not found.")
+        try:
+            DatasetService.check_dataset_permission(dataset, current_user, db.session())
+        except services.errors.account.NoPermissionError as e:
+            raise Forbidden(str(e))
         auto_disable_logs = DatasetService.get_dataset_auto_disable_logs(dataset_id_str, db.session())
         return dump_response(AutoDisableLogsResponse, auto_disable_logs), 200

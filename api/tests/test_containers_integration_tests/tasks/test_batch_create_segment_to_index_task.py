@@ -620,6 +620,73 @@ class TestBatchCreateSegmentToIndexTask:
         db_session_with_containers.refresh(document)
         assert document.word_count == 0
 
+    def test_batch_create_segment_to_index_task_cross_tenant_dataset_rejected(
+        self, db_session_with_containers: Session, mock_external_service_dependencies
+    ):
+        """
+        Regression test for TC-7A96C831 (defense-in-depth): the task must reject a
+        dataset/document/upload_file that does not belong to the tenant_id it was
+        invoked with, even though the controller-level check (DatasetService.
+        check_dataset_permission) is the primary gate. Without this check, a caller
+        from tenant B could inject segments into tenant A's dataset just by supplying
+        tenant A's dataset_id/document_id alongside their own upload_file_id.
+
+        This test verifies that the task properly handles the mismatch:
+        1. Fails when the dataset belongs to a different tenant than tenant_id
+        2. Sets appropriate Redis cache status
+        3. Does not write any segments into the victim tenant's dataset
+        """
+        # Victim: dataset + document owned by tenant A
+        owner_account, victim_tenant = self._create_test_account_and_tenant(db_session_with_containers)
+        victim_dataset = self._create_test_dataset(db_session_with_containers, owner_account, victim_tenant)
+        victim_document = self._create_test_document(
+            db_session_with_containers, owner_account, victim_tenant, victim_dataset
+        )
+
+        # Attacker: a completely separate tenant, uploading their own file
+        attacker_account, attacker_tenant = self._create_test_account_and_tenant(db_session_with_containers)
+        attacker_upload_file = self._create_test_upload_file(
+            db_session_with_containers, attacker_account, attacker_tenant
+        )
+
+        csv_content = self._create_test_csv_content(IndexStructureType.PARAGRAPH_INDEX)
+        mock_storage = mock_external_service_dependencies["storage"]
+
+        def mock_download(key, file_path):
+            Path(file_path).write_text(csv_content, encoding="utf-8")
+
+        mock_storage.download.side_effect = mock_download
+
+        # Attacker invokes the task against the victim's dataset/document, but with
+        # their own tenant_id/user_id and their own upload_file_id.
+        job_id = str(uuid.uuid4())
+        batch_create_segment_to_index_task(
+            job_id=job_id,
+            upload_file_id=attacker_upload_file.id,
+            dataset_id=victim_dataset.id,
+            document_id=victim_document.id,
+            tenant_id=attacker_tenant.id,
+            user_id=attacker_account.id,
+        )
+
+        from extensions.ext_redis import redis_client
+
+        cache_key = f"segment_batch_import_{job_id}"
+        cache_value = redis_client.get(cache_key)
+        assert cache_value == b"error"
+
+        # No segments were written into the victim's dataset/document.
+        segments = db_session_with_containers.scalars(
+            select(DocumentSegment).where(DocumentSegment.document_id == victim_document.id)
+        ).all()
+        assert len(segments) == 0
+
+        db_session_with_containers.refresh(victim_document)
+        assert victim_document.word_count == 0
+
+        mock_vector_service = mock_external_service_dependencies["vector_service"]
+        mock_vector_service.create_segments_vector.assert_not_called()
+
     def test_batch_create_segment_to_index_task_position_calculation(
         self, db_session_with_containers: Session, mock_external_service_dependencies
     ):

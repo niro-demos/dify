@@ -61,10 +61,14 @@ def batch_create_segment_to_index_task(
             dataset = session.get(Dataset, dataset_id)
             if not dataset:
                 raise ValueError("Dataset not exist.")
+            if dataset.tenant_id != tenant_id:
+                raise ValueError("Dataset does not belong to the requesting tenant.")
 
             dataset_document = session.get(Document, document_id)
             if not dataset_document:
                 raise ValueError("Document not exist.")
+            if dataset_document.dataset_id != dataset.id:
+                raise ValueError("Document does not belong to the given dataset.")
 
             if (
                 not dataset_document.enabled
@@ -76,6 +80,8 @@ def batch_create_segment_to_index_task(
             upload_file = session.get(UploadFile, upload_file_id)
             if not upload_file:
                 raise ValueError("UploadFile not found.")
+            if upload_file.tenant_id != tenant_id:
+                raise ValueError("UploadFile does not belong to the requesting tenant.")
 
             dataset_config = {
                 "id": dataset.id,

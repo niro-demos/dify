@@ -1310,21 +1310,18 @@ class DocumentPauseApi(DocumentResource):
     @account_initialization_required
     @cloud_edition_billing_rate_limit_check("knowledge")
     @console_ns.response(204, "Document paused successfully")
+    @with_current_user
+    @with_current_tenant_id
     @rbac_permission_required(RBACResourceScope.DATASET, RBACPermission.DATASET_EDIT)
-    def patch(self, dataset_id: UUID, document_id: UUID):
+    def patch(self, current_tenant_id: str, current_user: Account, dataset_id: UUID, document_id: UUID):
         """pause document."""
         dataset_id_str = str(dataset_id)
         document_id_str = str(document_id)
 
-        dataset = DatasetService.get_dataset(dataset_id_str, db.session())
-        if not dataset:
-            raise NotFound("Dataset not found.")
-
-        document = DocumentService.get_document(dataset.id, document_id_str, session=db.session())
-
-        # 404 if document not found
-        if document is None:
-            raise NotFound("Document Not Exists.")
+        # get_document() fetches the dataset, enforces DatasetService.check_dataset_permission(),
+        # then fetches the document scoped to that dataset - matching the pattern already used by
+        # DocumentApi.delete on this same resource.
+        document = self.get_document(dataset_id_str, document_id_str, current_user, current_tenant_id)
 
         # 403 if document is archived
         if DocumentService.check_archived(document):
@@ -1346,19 +1343,18 @@ class DocumentRecoverApi(DocumentResource):
     @account_initialization_required
     @cloud_edition_billing_rate_limit_check("knowledge")
     @console_ns.response(204, "Document resumed successfully")
+    @with_current_user
+    @with_current_tenant_id
     @rbac_permission_required(RBACResourceScope.DATASET, RBACPermission.DATASET_EDIT)
-    def patch(self, dataset_id: UUID, document_id: UUID):
+    def patch(self, current_tenant_id: str, current_user: Account, dataset_id: UUID, document_id: UUID):
         """recover document."""
         dataset_id_str = str(dataset_id)
         document_id_str = str(document_id)
-        dataset = DatasetService.get_dataset(dataset_id_str, db.session())
-        if not dataset:
-            raise NotFound("Dataset not found.")
-        document = DocumentService.get_document(dataset.id, document_id_str, session=db.session())
 
-        # 404 if document not found
-        if document is None:
-            raise NotFound("Document Not Exists.")
+        # get_document() fetches the dataset, enforces DatasetService.check_dataset_permission(),
+        # then fetches the document scoped to that dataset - matching the pattern already used by
+        # DocumentApi.delete on this same resource.
+        document = self.get_document(dataset_id_str, document_id_str, current_user, current_tenant_id)
 
         # 403 if document is archived
         if DocumentService.check_archived(document):
@@ -1380,8 +1376,9 @@ class DocumentRetryApi(DocumentResource):
     @cloud_edition_billing_rate_limit_check("knowledge")
     @console_ns.expect(console_ns.models[DocumentRetryPayload.__name__])
     @console_ns.response(204, "Documents retry started successfully")
+    @with_current_user
     @rbac_permission_required(RBACResourceScope.DATASET, RBACPermission.DATASET_EDIT)
-    def post(self, dataset_id: UUID):
+    def post(self, current_user: Account, dataset_id: UUID):
         """retry document."""
         payload = DocumentRetryPayload.model_validate(console_ns.payload or {})
         dataset_id_str = str(dataset_id)
@@ -1389,6 +1386,10 @@ class DocumentRetryApi(DocumentResource):
         retry_documents = []
         if not dataset:
             raise NotFound("Dataset not found.")
+        try:
+            DatasetService.check_dataset_permission(dataset, current_user, db.session())
+        except services.errors.account.NoPermissionError as e:
+            raise Forbidden(str(e))
         for document_id in payload.document_ids:
             try:
                 document = DocumentService.get_document(dataset.id, document_id, session=db.session())
@@ -1482,17 +1483,17 @@ class DocumentPipelineExecutionLogApi(DocumentResource):
     @setup_required
     @login_required
     @account_initialization_required
+    @with_current_user
+    @with_current_tenant_id
     @rbac_permission_required(RBACResourceScope.DATASET, RBACPermission.DATASET_CREATE_AND_MANAGEMENT)
-    def get(self, dataset_id: UUID, document_id: UUID):
+    def get(self, current_tenant_id: str, current_user: Account, dataset_id: UUID, document_id: UUID):
         dataset_id_str = str(dataset_id)
         document_id_str = str(document_id)
 
-        dataset = DatasetService.get_dataset(dataset_id_str, db.session())
-        if not dataset:
-            raise NotFound("Dataset not found.")
-        document = DocumentService.get_document(dataset.id, document_id_str, session=db.session())
-        if not document:
-            raise NotFound("Document not found.")
+        # get_document() fetches the dataset, enforces DatasetService.check_dataset_permission(),
+        # then fetches the document scoped to that dataset - matching the pattern already used by
+        # DocumentApi.delete on this same resource.
+        document = self.get_document(dataset_id_str, document_id_str, current_user, current_tenant_id)
         log = db.session.scalar(
             select(DocumentPipelineExecutionLog)
             .where(DocumentPipelineExecutionLog.document_id == document_id_str)

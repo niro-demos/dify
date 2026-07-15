@@ -8,9 +8,16 @@ from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 from flask import Flask
+from werkzeug.exceptions import Forbidden, NotFound
 
+import services
 from controllers.console.datasets import data_source as module
-from controllers.console.datasets.data_source import DataSourceApi, DataSourceNotionListApi
+from controllers.console.datasets.data_source import (
+    DataSourceApi,
+    DataSourceNotionDatasetSyncApi,
+    DataSourceNotionDocumentSyncApi,
+    DataSourceNotionListApi,
+)
 from models import Account, DataSourceOauthBinding
 
 ControllerMethod = Callable[..., tuple[dict[str, object], int]]
@@ -164,3 +171,116 @@ def test_notion_pre_import_pages_serializes_frontend_list_shape(flask_app: Flask
     }
     runtime.get_online_document_pages.assert_called_once()
     assert runtime.get_online_document_pages.call_args.kwargs["datasource_parameters"] == {}
+
+
+def _make_dataset(tenant_id: str = "tenant-1") -> MagicMock:
+    dataset = MagicMock()
+    dataset.id = "dataset-1"
+    dataset.tenant_id = tenant_id
+    return dataset
+
+
+class TestDataSourceNotionDatasetSyncApi:
+    def test_sync_success(self, flask_app: Flask, current_user: Account) -> None:
+        dataset = _make_dataset()
+        documents = [MagicMock(id="doc-1"), MagicMock(id="doc-2")]
+
+        with (
+            flask_app.test_request_context("/"),
+            patch.object(module.DatasetService, "get_dataset", return_value=dataset),
+            patch.object(module.DatasetService, "check_dataset_permission", return_value=None),
+            patch.object(module.DocumentService, "get_document_by_dataset_id", return_value=documents),
+            patch.object(module.document_indexing_sync_task, "delay") as delay_mock,
+        ):
+            response, status = unwrap(DataSourceNotionDatasetSyncApi().get)(
+                DataSourceNotionDatasetSyncApi(), current_user, "dataset-1"
+            )
+
+        assert status == 200
+        assert response == {"result": "success"}
+        assert delay_mock.call_count == 2
+
+    def test_sync_dataset_not_found(self, flask_app: Flask, current_user: Account) -> None:
+        with (
+            flask_app.test_request_context("/"),
+            patch.object(module.DatasetService, "get_dataset", return_value=None),
+        ):
+            with pytest.raises(NotFound):
+                unwrap(DataSourceNotionDatasetSyncApi().get)(
+                    DataSourceNotionDatasetSyncApi(), current_user, "dataset-1"
+                )
+
+    def test_sync_cross_tenant_denied(self, flask_app: Flask, current_user: Account) -> None:
+        """Regression test for TC-42C6CE80: a user from another tenant must not be able to
+        trigger a re-indexing/sync job on another workspace's dataset by guessing its id."""
+        other_tenant_dataset = _make_dataset(tenant_id="other-tenant")
+
+        with (
+            flask_app.test_request_context("/"),
+            patch.object(module.DatasetService, "get_dataset", return_value=other_tenant_dataset),
+            patch.object(
+                module.DatasetService,
+                "check_dataset_permission",
+                side_effect=services.errors.account.NoPermissionError("no access"),
+            ),
+            patch.object(module.document_indexing_sync_task, "delay") as delay_mock,
+        ):
+            with pytest.raises(Forbidden):
+                unwrap(DataSourceNotionDatasetSyncApi().get)(
+                    DataSourceNotionDatasetSyncApi(), current_user, "dataset-1"
+                )
+
+        delay_mock.assert_not_called()
+
+
+class TestDataSourceNotionDocumentSyncApi:
+    def test_sync_success(self, flask_app: Flask, current_user: Account) -> None:
+        dataset = _make_dataset()
+        document = MagicMock(id="doc-1")
+
+        with (
+            flask_app.test_request_context("/"),
+            patch.object(module.DatasetService, "get_dataset", return_value=dataset),
+            patch.object(module.DatasetService, "check_dataset_permission", return_value=None),
+            patch.object(module.DocumentService, "get_document", return_value=document),
+            patch.object(module.document_indexing_sync_task, "delay") as delay_mock,
+        ):
+            response, status = unwrap(DataSourceNotionDocumentSyncApi().get)(
+                DataSourceNotionDocumentSyncApi(), current_user, "dataset-1", "doc-1"
+            )
+
+        assert status == 200
+        assert response == {"result": "success"}
+        delay_mock.assert_called_once_with("dataset-1", "doc-1")
+
+    def test_sync_dataset_not_found(self, flask_app: Flask, current_user: Account) -> None:
+        with (
+            flask_app.test_request_context("/"),
+            patch.object(module.DatasetService, "get_dataset", return_value=None),
+        ):
+            with pytest.raises(NotFound):
+                unwrap(DataSourceNotionDocumentSyncApi().get)(
+                    DataSourceNotionDocumentSyncApi(), current_user, "dataset-1", "doc-1"
+                )
+
+    def test_sync_cross_tenant_denied(self, flask_app: Flask, current_user: Account) -> None:
+        """Regression test for TC-42C6CE80: a user from another tenant must not be able to
+        trigger a re-indexing/sync job on another workspace's document by guessing its id."""
+        other_tenant_dataset = _make_dataset(tenant_id="other-tenant")
+
+        with (
+            flask_app.test_request_context("/"),
+            patch.object(module.DatasetService, "get_dataset", return_value=other_tenant_dataset),
+            patch.object(
+                module.DatasetService,
+                "check_dataset_permission",
+                side_effect=services.errors.account.NoPermissionError("no access"),
+            ),
+            patch.object(module.document_indexing_sync_task, "delay") as delay_mock,
+        ):
+            with pytest.raises(Forbidden):
+                unwrap(DataSourceNotionDocumentSyncApi().get)(
+                    DataSourceNotionDocumentSyncApi(), current_user, "dataset-1", "doc-1"
+                )
+
+        delay_mock.assert_not_called()

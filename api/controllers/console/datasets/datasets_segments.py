@@ -593,6 +593,12 @@ class DatasetDocumentSegmentBatchImportApi(Resource):
         dataset = DatasetService.get_dataset(dataset_id_str, db.session())
         if not dataset:
             raise NotFound("Dataset not found.")
+
+        try:
+            DatasetService.check_dataset_permission(dataset, current_user, db.session())
+        except services.errors.account.NoPermissionError as e:
+            raise Forbidden(str(e))
+
         # check document
         document_id_str = str(document_id)
         document = DocumentService.get_document(dataset_id_str, document_id_str, session=db.session())
@@ -602,7 +608,11 @@ class DatasetDocumentSegmentBatchImportApi(Resource):
         payload = BatchImportPayload.model_validate(console_ns.payload or {})
         upload_file_id = payload.upload_file_id
 
-        upload_file = db.session.scalar(select(UploadFile).where(UploadFile.id == upload_file_id).limit(1))
+        upload_file = db.session.scalar(
+            select(UploadFile)
+            .where(UploadFile.id == upload_file_id, UploadFile.tenant_id == current_tenant_id)
+            .limit(1)
+        )
         if not upload_file:
             raise NotFound("UploadFile not found.")
 
