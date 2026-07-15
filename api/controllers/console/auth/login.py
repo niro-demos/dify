@@ -44,10 +44,12 @@ from events.tenant_event import tenant_was_created
 from extensions.ext_database import db
 from libs.helper import EmailStr, extract_remote_ip
 from libs.helper import timezone as validate_timezone_string
+from libs.passport import PassportService
 from libs.token import (
     clear_access_token_from_cookie,
     clear_csrf_token_from_cookie,
     clear_refresh_token_from_cookie,
+    extract_access_token,
     extract_refresh_token,
     set_access_token_to_cookie,
     set_csrf_token_to_cookie,
@@ -187,6 +189,23 @@ class LoginApi(Resource):
         return response
 
 
+def _current_access_token_jti() -> str | None:
+    """Best-effort extraction of the jti claim from the request's own access token.
+
+    Used only to revoke the token being logged out with; any failure to read it
+    just means nothing gets denylisted (the token will still expire naturally).
+    """
+    token = extract_access_token(request)
+    if not token:
+        return None
+    try:
+        decoded = PassportService().verify(token)
+    except Exception:
+        return None
+    jti = decoded.get("jti")
+    return jti if isinstance(jti, str) else None
+
+
 @console_ns.route("/logout")
 class LogoutApi(Resource):
     @setup_required
@@ -196,7 +215,7 @@ class LogoutApi(Resource):
         # response-contract:ignore cookie-bearing Flask response
         response = make_response(SimpleResultResponse(result="success").model_dump(mode="json"))
         if not isinstance(account, flask_login.AnonymousUserMixin):
-            AccountService.logout(account=account)
+            AccountService.logout(account=account, access_token_jti=_current_access_token_jti())
             flask_login.logout_user()
 
         # Clear cookies on logout

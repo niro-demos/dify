@@ -83,6 +83,9 @@ def load_user_from_request(request_from_flask_login: Request) -> LoginUser | Non
             raise Unauthorized("Invalid Authorization token.")
         if not user_id:
             raise Unauthorized("Invalid Authorization token.")
+        jti = decoded.get("jti")
+        if jti and AccountService.is_access_token_revoked(jti):
+            raise Unauthorized("Invalid Authorization token.")
 
         logged_in_account = AccountService.load_logged_in_account(account_id=user_id, session=db.session())
         return logged_in_account

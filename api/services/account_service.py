@@ -137,6 +137,10 @@ ACCOUNT_REFRESH_TOKEN_PREFIX = "account_refresh_token:"
 REFRESH_TOKEN_EXPIRY = timedelta(days=dify_config.REFRESH_TOKEN_EXPIRE_DAYS)
 ACCOUNT_LAST_ACTIVE_REFRESH_PREFIX = "account_last_active_refresh:"
 ACCOUNT_LAST_ACTIVE_REFRESH_INTERVAL = timedelta(minutes=10)
+# Denylist of access-token jti claims revoked before their natural expiry (e.g. via
+# logout). Entries are stored with the same TTL as the access token's remaining
+# lifetime, so the denylist self-cleans and never grows unbounded.
+ACCESS_TOKEN_DENYLIST_PREFIX = "access_token_denylist:"
 
 
 class AccountService:
@@ -281,6 +285,28 @@ class AccountService:
         redis_client.delete(AccountService._get_account_refresh_token_key(account_id))
 
     @staticmethod
+    def _get_access_token_denylist_key(jti: str) -> str:
+        return f"{ACCESS_TOKEN_DENYLIST_PREFIX}{jti}"
+
+    @staticmethod
+    def revoke_access_token(jti: str) -> None:
+        """Denylist an access token's jti so it is rejected for the rest of its lifetime.
+
+        The access token JWT itself stays cryptographically valid until it expires
+        (it is stateless), so revocation is enforced out-of-band via this Redis
+        denylist, checked by the auth-loading path on every request.
+        """
+        redis_client.setex(
+            AccountService._get_access_token_denylist_key(jti),
+            int(dify_config.ACCESS_TOKEN_EXPIRE_MINUTES * 60),
+            1,
+        )
+
+    @staticmethod
+    def is_access_token_revoked(jti: str) -> bool:
+        return bool(redis_client.exists(AccountService._get_access_token_denylist_key(jti)))
+
+    @staticmethod
     def get_account_by_email(email: str, *, session: Session) -> Account | None:
         """Plain ``Account`` getter keyed by email. Case-sensitive — use
         :meth:`has_active_account_with_email` for the case-insensitive
@@ -362,6 +388,9 @@ class AccountService:
             "exp": exp,
             "iss": dify_config.EDITION,
             "sub": "Console API Passport",
+            # Unique per-issuance id so a single access token can be revoked
+            # (denylisted) independently of every other token issued to this account.
+            "jti": uuid.uuid4().hex,
         }
 
         token: str = PassportService().issue(payload)
@@ -654,10 +683,15 @@ class AccountService:
         return TokenPair(access_token=access_token, refresh_token=refresh_token, csrf_token=csrf_token)
 
     @staticmethod
-    def logout(*, account: Account):
+    def logout(*, account: Account, access_token_jti: str | None = None) -> None:
         refresh_token = redis_client.get(AccountService._get_account_refresh_token_key(account.id))
         if refresh_token:
             AccountService._delete_refresh_token(refresh_token.decode("utf-8"), account.id)
+        # Revoke the access token itself so a captured/stale token cannot keep
+        # reading or writing the account after logout, even though the JWT
+        # signature remains valid until it naturally expires.
+        if access_token_jti:
+            AccountService.revoke_access_token(access_token_jti)
 
     @staticmethod
     def refresh_token(refresh_token: str, *, session: Session) -> TokenPair:

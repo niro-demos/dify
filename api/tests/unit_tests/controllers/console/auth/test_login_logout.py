@@ -12,11 +12,13 @@ import base64
 import logging
 from unittest.mock import ANY, MagicMock, Mock, patch
 
+import jwt as pyjwt
 import pytest
 from flask import Flask
 from flask_restx import Api
 from werkzeug.exceptions import Unauthorized
 
+from configs import dify_config
 from controllers.console.auth.error import (
     AuthenticationFailedError,
     EmailPasswordLoginLimitError,
@@ -29,6 +31,7 @@ from controllers.console.error import (
     SeatsLimitExceeded,
     WorkspacesLimitExceeded,
 )
+from services.account_service import AccountService
 from services.entities.auth_entities import LoginFailureReason
 from services.errors.account import AccountLoginError, AccountPasswordError, SeatsLimitExceededError
 
@@ -566,7 +569,7 @@ class TestLogoutApi:
             response = unwrap(logout_api.post)(logout_api, mock_account)
 
         # Assert
-        mock_service_logout.assert_called_once_with(account=mock_account)
+        mock_service_logout.assert_called_once_with(account=mock_account, access_token_jti=None)
         mock_logout_user.assert_called_once()
         assert response.json["result"] == "success"
 
@@ -592,4 +595,28 @@ class TestLogoutApi:
             response = unwrap(logout_api.post)(logout_api, anonymous_user)
 
         # Assert
+        assert response.json["result"] == "success"
+
+    @patch("controllers.console.auth.login.AccountService.logout")
+    @patch("controllers.console.auth.login.flask_login.logout_user")
+    def test_logout_extracts_jti_from_request_access_token(
+        self, mock_logout_user: MagicMock, mock_service_logout: MagicMock, app: Flask, mock_account, monkeypatch
+    ):
+        """
+        TC-2322148C: logout must pass the current request's access-token jti
+        through to AccountService.logout so it can be denylisted, not just
+        clear the refresh token.
+        """
+        monkeypatch.setattr(dify_config, "SECRET_KEY", "test-secret-key-for-tc-2322148c-32-bytes-min")
+        access_token = AccountService.get_account_jwt_token(mock_account)
+        expected_jti = pyjwt.decode(access_token, options={"verify_signature": False})["jti"]
+
+        # Act
+        with app.test_request_context("/logout", method="POST", headers={"Cookie": f"access_token={access_token}"}):
+            logout_api = LogoutApi()
+            response = unwrap(logout_api.post)(logout_api, mock_account)
+
+        # Assert
+        mock_service_logout.assert_called_once_with(account=mock_account, access_token_jti=expected_jti)
+        mock_logout_user.assert_called_once()
         assert response.json["result"] == "success"
