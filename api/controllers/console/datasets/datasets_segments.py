@@ -629,6 +629,10 @@ class DatasetDocumentSegmentBatchImportApi(Resource):
         dataset = DatasetService.get_dataset(dataset_id_str, session)
         if not dataset:
             raise NotFound("Dataset not found.")
+        try:
+            DatasetService.check_dataset_permission(dataset, current_user, session)
+        except services.errors.account.NoPermissionError as e:
+            raise Forbidden(str(e))
         # check document
         document_id_str = str(document_id)
         document = DocumentService.get_document(dataset_id_str, document_id_str, session=session)

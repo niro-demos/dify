@@ -544,6 +544,10 @@ class TestDatasetDocumentSegmentBatchImportApi:
                 "controllers.console.datasets.datasets_segments.DatasetService.get_dataset", return_value=MagicMock()
             ),
             patch(
+                "controllers.console.datasets.datasets_segments.DatasetService.check_dataset_permission",
+                return_value=None,
+            ),
+            patch(
                 "controllers.console.datasets.datasets_segments.DocumentService.get_document", return_value=MagicMock()
             ),
             patch("controllers.console.datasets.datasets_segments.redis_client.setnx", return_value=True),
@@ -584,6 +588,10 @@ class TestDatasetDocumentSegmentBatchImportApi:
             patch(
                 "controllers.console.datasets.datasets_segments.DatasetService.get_dataset", return_value=MagicMock()
             ),
+            patch(
+                "controllers.console.datasets.datasets_segments.DatasetService.check_dataset_permission",
+                return_value=None,
+            ),
             patch("controllers.console.datasets.datasets_segments.DocumentService.get_document", return_value=None),
         ):
             with pytest.raises(NotFound):
@@ -601,6 +609,10 @@ class TestDatasetDocumentSegmentBatchImportApi:
             patch.object(type(console_ns), "payload", payload),
             patch(
                 "controllers.console.datasets.datasets_segments.DatasetService.get_dataset", return_value=MagicMock()
+            ),
+            patch(
+                "controllers.console.datasets.datasets_segments.DatasetService.check_dataset_permission",
+                return_value=None,
             ),
             patch(
                 "controllers.console.datasets.datasets_segments.DocumentService.get_document", return_value=MagicMock()
@@ -625,6 +637,10 @@ class TestDatasetDocumentSegmentBatchImportApi:
                 "controllers.console.datasets.datasets_segments.DatasetService.get_dataset", return_value=MagicMock()
             ),
             patch(
+                "controllers.console.datasets.datasets_segments.DatasetService.check_dataset_permission",
+                return_value=None,
+            ),
+            patch(
                 "controllers.console.datasets.datasets_segments.DocumentService.get_document", return_value=MagicMock()
             ),
         ):
@@ -647,6 +663,10 @@ class TestDatasetDocumentSegmentBatchImportApi:
                 "controllers.console.datasets.datasets_segments.DatasetService.get_dataset", return_value=MagicMock()
             ),
             patch(
+                "controllers.console.datasets.datasets_segments.DatasetService.check_dataset_permission",
+                return_value=None,
+            ),
+            patch(
                 "controllers.console.datasets.datasets_segments.DocumentService.get_document", return_value=MagicMock()
             ),
             patch(
@@ -666,6 +686,34 @@ class TestDatasetDocumentSegmentBatchImportApi:
         ):
             with pytest.raises(ValueError):
                 method(api, job_id="job-1")
+
+    def test_post_cross_tenant_denied(self, app: Flask):
+        """Regression test for TC-9632634E: a caller from another tenant must not be able
+        to inject segments into an unrelated workspace's dataset/document via batch import."""
+        api = DatasetDocumentSegmentBatchImportApi()
+        method = unwrap(api.post)
+        payload = {"upload_file_id": "file-1"}
+        user = MagicMock(id="u1")
+        session = MagicMock()
+        with (
+            app.test_request_context("/", json=payload),
+            patch.object(type(console_ns), "payload", payload),
+            patch(
+                "controllers.console.datasets.datasets_segments.DatasetService.get_dataset", return_value=MagicMock()
+            ),
+            patch(
+                "controllers.console.datasets.datasets_segments.DatasetService.check_dataset_permission",
+                side_effect=services.errors.account.NoPermissionError("No permission"),
+            ),
+            patch("controllers.console.datasets.datasets_segments.DocumentService.get_document") as mock_get_document,
+            patch(
+                "controllers.console.datasets.datasets_segments.batch_create_segment_to_index_task.delay"
+            ) as mock_delay,
+        ):
+            with pytest.raises(Forbidden):
+                method(api, session, "tenant-1", user, "ds-1", "doc-1")
+        mock_get_document.assert_not_called()
+        mock_delay.assert_not_called()
 
 
 class TestChildChunkAddApi:
@@ -1048,6 +1096,10 @@ class TestSegmentOperationCases:
             app.test_request_context("/", json=payload),
             patch.object(type(console_ns), "payload", payload),
             patch("controllers.console.datasets.datasets_segments.DatasetService.get_dataset", return_value=dataset),
+            patch(
+                "controllers.console.datasets.datasets_segments.DatasetService.check_dataset_permission",
+                return_value=None,
+            ),
             patch("controllers.console.datasets.datasets_segments.DocumentService.get_document", return_value=None),
         ):
             with pytest.raises(NotFound):
@@ -1068,6 +1120,10 @@ class TestSegmentOperationCases:
             app.test_request_context("/", json=payload),
             patch.object(type(console_ns), "payload", payload),
             patch("controllers.console.datasets.datasets_segments.DatasetService.get_dataset", return_value=dataset),
+            patch(
+                "controllers.console.datasets.datasets_segments.DatasetService.check_dataset_permission",
+                return_value=None,
+            ),
             patch("controllers.console.datasets.datasets_segments.DocumentService.get_document", return_value=document),
         ):
             with pytest.raises(NotFound):

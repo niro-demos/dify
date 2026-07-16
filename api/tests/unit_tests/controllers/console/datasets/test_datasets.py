@@ -1358,24 +1358,62 @@ class TestDatasetEnableApiApi:
     def test_enable_api(self, app: Flask):
         api = DatasetEnableApiApi()
         method = unwrap(api.post)
+        user = MagicMock()
         with (
             app.test_request_context("/"),
+            patch("controllers.console.datasets.datasets.DatasetService.get_dataset", return_value=MagicMock()),
+            patch("controllers.console.datasets.datasets.DatasetService.check_dataset_permission", return_value=None),
             patch("controllers.console.datasets.datasets.DatasetService.update_dataset_api_status", return_value=None),
         ):
-            response, status = method(api, MagicMock(), "dataset-1", "enable")
+            response, status = method(api, MagicMock(), user, "dataset-1", "enable")
         assert status == 200
         assert response["result"] == "success"
 
     def test_disable_api(self, app: Flask):
         api = DatasetEnableApiApi()
         method = unwrap(api.post)
+        user = MagicMock()
         with (
             app.test_request_context("/"),
+            patch("controllers.console.datasets.datasets.DatasetService.get_dataset", return_value=MagicMock()),
+            patch("controllers.console.datasets.datasets.DatasetService.check_dataset_permission", return_value=None),
             patch("controllers.console.datasets.datasets.DatasetService.update_dataset_api_status", return_value=None),
         ):
-            response, status = method(api, MagicMock(), "dataset-1", "disable")
+            response, status = method(api, MagicMock(), user, "dataset-1", "disable")
         assert status == 200
         assert response["result"] == "success"
+
+    def test_enable_api_dataset_not_found(self, app: Flask):
+        api = DatasetEnableApiApi()
+        method = unwrap(api.post)
+        user = MagicMock()
+        with (
+            app.test_request_context("/"),
+            patch("controllers.console.datasets.datasets.DatasetService.get_dataset", return_value=None),
+        ):
+            with pytest.raises(NotFound):
+                method(api, MagicMock(), user, "dataset-1", "enable")
+
+    def test_enable_api_cross_tenant_denied(self, app: Flask):
+        """Regression test for TC-C8F9E854: a caller from another tenant must not be able
+        to toggle a dataset's external API exposure flag."""
+        api = DatasetEnableApiApi()
+        method = unwrap(api.post)
+        user = MagicMock()
+        with (
+            app.test_request_context("/"),
+            patch("controllers.console.datasets.datasets.DatasetService.get_dataset", return_value=MagicMock()),
+            patch(
+                "controllers.console.datasets.datasets.DatasetService.check_dataset_permission",
+                side_effect=services.errors.account.NoPermissionError("No permission"),
+            ),
+            patch(
+                "controllers.console.datasets.datasets.DatasetService.update_dataset_api_status"
+            ) as mock_update_status,
+        ):
+            with pytest.raises(Forbidden):
+                method(api, MagicMock(), user, "dataset-1", "disable")
+        mock_update_status.assert_not_called()
 
 
 class TestDatasetApiBaseUrlApi:

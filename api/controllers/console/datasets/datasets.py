@@ -1161,10 +1161,20 @@ class DatasetEnableApiApi(Resource):
     @login_required
     @account_initialization_required
     @console_ns.response(200, "Success", console_ns.models[SimpleResultResponse.__name__])
+    @with_current_user
     @rbac_permission_required(RBACResourceScope.DATASET, RBACPermission.DATASET_EDIT)
     @with_session
-    def post(self, session: Session, dataset_id: UUID, status: str):
+    def post(self, session: Session, current_user: Account, dataset_id: UUID, status: str):
         dataset_id_str = str(dataset_id)
+
+        dataset = DatasetService.get_dataset(dataset_id_str, session)
+        if dataset is None:
+            raise NotFound("Dataset not found.")
+
+        try:
+            DatasetService.check_dataset_permission(dataset, current_user, session)
+        except services.errors.account.NoPermissionError as e:
+            raise Forbidden(str(e))
 
         DatasetService.update_dataset_api_status(dataset_id_str, status == "enable", session)
 
