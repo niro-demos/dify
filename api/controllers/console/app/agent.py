@@ -21,6 +21,7 @@ from controllers.console.wraps import (
     RBACPermission,
     RBACResourceScope,
     account_initialization_required,
+    edit_permission_required,
     rbac_permission_required,
     setup_required,
     with_current_tenant_id,
@@ -358,6 +359,8 @@ class AgentSkillUploadByAgentApi(Resource):
     @setup_required
     @login_required
     @account_initialization_required
+    @edit_permission_required
+    @rbac_permission_required(RBACResourceScope.APP, RBACPermission.APP_EDIT)
     @with_current_user
     @with_current_tenant_id
     @with_session
@@ -383,6 +386,8 @@ class AgentSkillUploadApi(Resource):
     @setup_required
     @login_required
     @account_initialization_required
+    @edit_permission_required
+    @rbac_permission_required(RBACResourceScope.APP, RBACPermission.APP_EDIT)
     @with_current_user
     @with_session
     @get_app_model(mode=_WORKFLOW_AGENT_DRIVE_APP_MODES)
@@ -403,6 +408,8 @@ class AgentDriveFilesByAgentApi(Resource):
     @setup_required
     @login_required
     @account_initialization_required
+    @edit_permission_required
+    @rbac_permission_required(RBACResourceScope.APP, RBACPermission.APP_EDIT)
     @with_current_user
     @with_current_tenant_id
     @with_session
@@ -419,6 +426,8 @@ class AgentDriveFilesByAgentApi(Resource):
     @setup_required
     @login_required
     @account_initialization_required
+    @edit_permission_required
+    @rbac_permission_required(RBACResourceScope.APP, RBACPermission.APP_EDIT)
     @with_current_user
     @with_current_tenant_id
     @with_session
@@ -441,6 +450,8 @@ class AgentDriveFilesApi(Resource):
     @setup_required
     @login_required
     @account_initialization_required
+    @edit_permission_required
+    @rbac_permission_required(RBACResourceScope.APP, RBACPermission.APP_EDIT)
     @with_current_user
     @with_session
     @get_app_model(mode=_WORKFLOW_AGENT_DRIVE_APP_MODES)
@@ -455,6 +466,8 @@ class AgentDriveFilesApi(Resource):
     @setup_required
     @login_required
     @account_initialization_required
+    @edit_permission_required
+    @rbac_permission_required(RBACResourceScope.APP, RBACPermission.APP_EDIT)
     @with_current_user
     @with_session
     @get_app_model(mode=_WORKFLOW_AGENT_DRIVE_APP_MODES)
@@ -471,6 +484,8 @@ class AgentSkillByAgentApi(Resource):
     @setup_required
     @login_required
     @account_initialization_required
+    @edit_permission_required
+    @rbac_permission_required(RBACResourceScope.APP, RBACPermission.APP_EDIT)
     @with_current_user
     @with_current_tenant_id
     @with_session
@@ -496,6 +511,8 @@ class AgentSkillApi(Resource):
     @setup_required
     @login_required
     @account_initialization_required
+    @edit_permission_required
+    @rbac_permission_required(RBACResourceScope.APP, RBACPermission.APP_EDIT)
     @with_current_user
     @with_session
     @get_app_model(mode=_WORKFLOW_AGENT_DRIVE_APP_MODES)
