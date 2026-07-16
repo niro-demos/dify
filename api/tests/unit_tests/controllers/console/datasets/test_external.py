@@ -1,12 +1,16 @@
 import inspect
+import json
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import ANY, MagicMock, PropertyMock, patch
 
 import pytest
-from flask import Flask
+from flask import Flask, Response
+from pytest_mock import MockerFixture
 from werkzeug.exceptions import Forbidden, NotFound
 
+import controllers.console.wraps as console_wraps
+import libs.login as login_module
 import services
 from controllers.console import console_ns
 from controllers.console.datasets.error import DatasetNameDuplicateError
@@ -18,6 +22,7 @@ from controllers.console.datasets.external import (
     ExternalDatasetCreateApi,
     ExternalKnowledgeHitTestingApi,
 )
+from extensions.ext_login import DifyLoginManager
 from models.account import Account, TenantAccountRole
 from services.dataset_service import DatasetService
 from services.external_knowledge_service import ExternalDatasetService
@@ -548,7 +553,7 @@ class TestBedrockRetrievalApi:
                 return_value=retrieval_response,
             ) as knowledge_retrieval,
         ):
-            resp, status = method()
+            resp, status = method(api)
 
         assert status == 200
         assert resp == retrieval_response
@@ -726,4 +731,92 @@ class TestBedrockRetrievalApiAdvanced:
             ),
         ):
             with pytest.raises(ValueError):
-                method()
+                method(api)
+
+
+class TestBedrockRetrievalApiAuthGate:
+    """Regression tests for TC-2838C805.
+
+    `BedrockRetrievalApi.post` builds a boto3 `bedrock-agent-runtime` client from the
+    deployment's own AWS credentials and calls `retrieve()` for whatever `knowledge_id`
+    the caller supplies. It must therefore require a logged-in, initialized account like
+    every sibling endpoint in this module -- an unauthenticated caller must never reach
+    `ExternalDatasetTestService.knowledge_retrieval`.
+    """
+
+    @pytest.fixture
+    def login_app(self, mocker: MockerFixture) -> Flask:
+        app = Flask("test_bedrock_retrieval_auth_gate")
+        app.config["TESTING"] = True
+
+        login_manager = DifyLoginManager()
+        login_manager.init_app(app)
+        login_manager.unauthorized = mocker.Mock(
+            return_value=Response(
+                json.dumps({"code": "unauthorized", "message": "Invalid Authorization token.", "status": 401}),
+                status=401,
+                content_type="application/json",
+            )
+        )
+
+        @login_manager.user_loader
+        def load_user(_user_id: str):
+            return None
+
+        return app
+
+    @pytest.fixture(autouse=True)
+    def _self_hosted_setup_completed(self, mocker: MockerFixture) -> None:
+        # `setup_required` is a separate, DB-backed concern (has the instance completed
+        # SELF_HOSTED bootstrap?) that is orthogonal to the login gate under test here, so
+        # pin EDITION to CLOUD to short-circuit it without touching the database.
+        mocker.patch.object(console_wraps.dify_config, "EDITION", "CLOUD")
+
+    @staticmethod
+    def _payload() -> dict[str, Any]:
+        return {
+            "retrieval_setting": {"top_k": 5, "score_threshold": 0},
+            "query": "poc-unauthenticated-probe",
+            "knowledge_id": "e2a00e50-2592-46e6-8544-a49830ef8a5a",
+        }
+
+    def test_unauthenticated_request_is_rejected_before_bedrock_call(self, login_app: Flask, mocker: MockerFixture):
+        api = BedrockRetrievalApi()
+        payload = self._payload()
+
+        mocker.patch.object(login_module, "_resolve_current_user", return_value=None)
+        knowledge_retrieval = mocker.patch.object(ExternalDatasetTestService, "knowledge_retrieval")
+
+        with (
+            login_app.test_request_context("/", json=payload),
+            patch.object(type(console_ns), "payload", new_callable=PropertyMock, return_value=payload),
+        ):
+            result = api.post()
+
+        assert isinstance(result, Response)
+        assert result.status_code == 401
+        knowledge_retrieval.assert_not_called()
+
+    def test_authenticated_request_still_reaches_bedrock_call(
+        self, login_app: Flask, mocker: MockerFixture, current_user: Account
+    ):
+        api = BedrockRetrievalApi()
+        payload = self._payload()
+        retrieval_response = {"records": []}
+
+        mocker.patch.object(login_module, "_resolve_current_user", return_value=current_user)
+        mocker.patch.object(login_module, "check_csrf_token")
+        mocker.patch.object(console_wraps, "current_account_with_tenant", return_value=(current_user, "tenant-1"))
+        knowledge_retrieval = mocker.patch.object(
+            ExternalDatasetTestService, "knowledge_retrieval", return_value=retrieval_response
+        )
+
+        with (
+            login_app.test_request_context("/", json=payload),
+            patch.object(type(console_ns), "payload", new_callable=PropertyMock, return_value=payload),
+        ):
+            resp, status = api.post()
+
+        assert status == 200
+        assert resp == retrieval_response
+        knowledge_retrieval.assert_called_once()
