@@ -703,6 +703,8 @@ class AgentConfigSkillUploadByAgentApi(Resource):
     @setup_required
     @login_required
     @account_initialization_required
+    @edit_permission_required
+    @rbac_permission_required(RBACResourceScope.APP, RBACPermission.APP_EDIT)
     @with_current_user
     @with_current_tenant_id
     @with_session
@@ -807,6 +809,8 @@ class AgentConfigFilesByAgentApi(Resource):
     @setup_required
     @login_required
     @account_initialization_required
+    @edit_permission_required
+    @rbac_permission_required(RBACResourceScope.APP, RBACPermission.APP_EDIT)
     @with_current_user
     @with_current_tenant_id
     @with_session
@@ -1150,6 +1154,8 @@ class AgentConfigSkillByAgentApi(Resource):
     @setup_required
     @login_required
     @account_initialization_required
+    @edit_permission_required
+    @rbac_permission_required(RBACResourceScope.APP, RBACPermission.APP_EDIT)
     @with_current_user
     @with_current_tenant_id
     @with_session
@@ -1287,6 +1293,8 @@ class AgentConfigFileByAgentApi(Resource):
     @setup_required
     @login_required
     @account_initialization_required
+    @edit_permission_required
+    @rbac_permission_required(RBACResourceScope.APP, RBACPermission.APP_EDIT)
     @with_current_user
     @with_current_tenant_id
     @with_session
