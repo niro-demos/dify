@@ -375,6 +375,49 @@ def test_confirm_import_returns_failed_for_invalid_pending_payload(monkeypatch):
     assert result.error == "Invalid import information"
 
 
+def test_confirm_import_rejects_cross_tenant_confirmation(monkeypatch):
+    """A pending import created by tenant-org-a must not be completable by tenant-org-b.
+
+    Regression test for TC-406AD1FC: confirm_import() previously trusted the
+    import_id alone and never compared the pending import's originating tenant
+    against the confirming account's tenant, letting any tenant that learned a
+    pending import_id finish someone else's import into their own workspace.
+    """
+    service = SnippetDslService(session=SimpleNamespace(scalar=Mock(return_value=None)))
+    yaml_content = """
+version: 9.9.9
+kind: snippet
+snippet:
+  name: OrgA Secret Snippet
+  type: node
+workflow:
+  graph:
+    nodes: []
+    edges: []
+"""
+    pending = SnippetPendingData(
+        import_mode="yaml-content",
+        yaml_content=yaml_content,
+        snippet_id=None,
+        tenant_id="tenant-org-a",
+    )
+    create_or_update = Mock(return_value=SimpleNamespace(id="org-b-owned-snippet"))
+    monkeypatch.setattr(service, "_create_or_update_snippet", create_or_update)
+    monkeypatch.setattr("services.snippet_dsl_service.redis_client.get", Mock(return_value=pending.model_dump_json()))
+    redis_delete = Mock()
+    monkeypatch.setattr("services.snippet_dsl_service.redis_client.delete", redis_delete)
+
+    result = service.confirm_import(
+        import_id="import-1",
+        account=SimpleNamespace(id="account-b", current_tenant_id="tenant-org-b"),
+    )
+
+    assert result.status == ImportStatus.FAILED
+    assert result.error == "Import information expired or does not exist"
+    create_or_update.assert_not_called()
+    redis_delete.assert_not_called()
+
+
 def test_confirm_import_creates_snippet_from_pending_data(monkeypatch):
     service = SnippetDslService(session=SimpleNamespace(scalar=Mock(return_value=None)))
     account = SimpleNamespace(id="account-1", current_tenant_id="tenant-1")
@@ -396,6 +439,7 @@ workflow:
         name="Override name",
         description="Override description",
         snippet_id=None,
+        tenant_id="tenant-1",
     )
     create_or_update = Mock(return_value=snippet)
     monkeypatch.setattr(service, "_create_or_update_snippet", create_or_update)
@@ -423,6 +467,7 @@ def test_confirm_import_returns_failed_for_non_mapping_yaml(monkeypatch):
         import_mode="yaml-content",
         yaml_content="- item",
         snippet_id=None,
+        tenant_id="tenant-1",
     )
     monkeypatch.setattr("services.snippet_dsl_service.redis_client.get", Mock(return_value=pending.model_dump_json()))
 
@@ -439,6 +484,7 @@ def test_confirm_import_returns_failed_when_create_or_update_raises(monkeypatch)
         import_mode="yaml-content",
         yaml_content="version: 0.1.0\nkind: snippet\nsnippet:\n  name: Bad\n",
         snippet_id="snippet-1",
+        tenant_id="tenant-1",
     )
     monkeypatch.setattr("services.snippet_dsl_service.redis_client.get", Mock(return_value=pending.model_dump_json()))
     monkeypatch.setattr(service, "_create_or_update_snippet", Mock(side_effect=RuntimeError("boom")))

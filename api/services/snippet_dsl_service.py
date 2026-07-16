@@ -55,6 +55,11 @@ class SnippetPendingData(BaseModel):
     name: str | None = None
     description: str | None = None
     snippet_id: str | None
+    # Tenant that initiated the import. confirm_import() must verify this against
+    # the confirming account's tenant so a pending import_id (a bearer-style token
+    # cached in Redis) cannot be completed by a different tenant that merely
+    # learns/guesses the id.
+    tenant_id: str
 
 
 class CheckDependenciesPendingData(BaseModel):
@@ -234,6 +239,7 @@ class SnippetDslService:
                     name=name,
                     description=description,
                     snippet_id=snippet_id,
+                    tenant_id=account.current_tenant_id,
                 )
                 redis_client.setex(
                     f"{IMPORT_INFO_REDIS_KEY_PREFIX}{import_id}",
@@ -313,6 +319,16 @@ class SnippetDslService:
 
             pending_data_str = pending_data.decode("utf-8") if isinstance(pending_data, bytes) else pending_data
             pending = SnippetPendingData.model_validate_json(pending_data_str)
+
+            # Only the tenant that started this import may confirm it. Respond the
+            # same way as an unknown/expired import_id so a different tenant can't
+            # use the response to learn that someone else's pending import exists.
+            if pending.tenant_id != account.current_tenant_id:
+                return SnippetImportInfo(
+                    id=import_id,
+                    status=ImportStatus.FAILED,
+                    error="Import information expired or does not exist",
+                )
 
             data = yaml.safe_load(pending.yaml_content)
             if not isinstance(data, dict):
