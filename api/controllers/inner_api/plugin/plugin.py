@@ -42,9 +42,9 @@ from services.file_request_service import FileRequestService
 
 @inner_api_ns.route("/invoke/llm")
 class PluginInvokeLLMApi(Resource):
-    @get_user_tenant
     @setup_required
     @plugin_inner_api_only
+    @get_user_tenant
     @plugin_data(payload_type=RequestInvokeLLM)
     @inner_api_ns.doc("plugin_invoke_llm")
     @inner_api_ns.doc(description="Invoke LLM models through plugin interface")
@@ -65,9 +65,9 @@ class PluginInvokeLLMApi(Resource):
 
 @inner_api_ns.route("/invoke/llm/structured-output")
 class PluginInvokeLLMWithStructuredOutputApi(Resource):
-    @get_user_tenant
     @setup_required
     @plugin_inner_api_only
+    @get_user_tenant
     @plugin_data(payload_type=RequestInvokeLLMWithStructuredOutput)
     @inner_api_ns.doc("plugin_invoke_llm_structured")
     @inner_api_ns.doc(description="Invoke LLM models with structured output through plugin interface")
@@ -90,9 +90,9 @@ class PluginInvokeLLMWithStructuredOutputApi(Resource):
 
 @inner_api_ns.route("/invoke/text-embedding")
 class PluginInvokeTextEmbeddingApi(Resource):
-    @get_user_tenant
     @setup_required
     @plugin_inner_api_only
+    @get_user_tenant
     @plugin_data(payload_type=RequestInvokeTextEmbedding)
     @inner_api_ns.doc("plugin_invoke_text_embedding")
     @inner_api_ns.doc(description="Invoke text embedding models through plugin interface")
@@ -120,9 +120,9 @@ class PluginInvokeTextEmbeddingApi(Resource):
 
 @inner_api_ns.route("/invoke/rerank")
 class PluginInvokeRerankApi(Resource):
-    @get_user_tenant
     @setup_required
     @plugin_inner_api_only
+    @get_user_tenant
     @plugin_data(payload_type=RequestInvokeRerank)
     @inner_api_ns.doc("plugin_invoke_rerank")
     @inner_api_ns.doc(description="Invoke rerank models through plugin interface")
@@ -146,9 +146,9 @@ class PluginInvokeRerankApi(Resource):
 
 @inner_api_ns.route("/invoke/tts")
 class PluginInvokeTTSApi(Resource):
-    @get_user_tenant
     @setup_required
     @plugin_inner_api_only
+    @get_user_tenant
     @plugin_data(payload_type=RequestInvokeTTS)
     @inner_api_ns.doc("plugin_invoke_tts")
     @inner_api_ns.doc(description="Invoke text-to-speech models through plugin interface")
@@ -173,9 +173,9 @@ class PluginInvokeTTSApi(Resource):
 
 @inner_api_ns.route("/invoke/speech2text")
 class PluginInvokeSpeech2TextApi(Resource):
-    @get_user_tenant
     @setup_required
     @plugin_inner_api_only
+    @get_user_tenant
     @plugin_data(payload_type=RequestInvokeSpeech2Text)
     @inner_api_ns.doc("plugin_invoke_speech2text")
     @inner_api_ns.doc(description="Invoke speech-to-text models through plugin interface")
@@ -199,9 +199,9 @@ class PluginInvokeSpeech2TextApi(Resource):
 
 @inner_api_ns.route("/invoke/moderation")
 class PluginInvokeModerationApi(Resource):
-    @get_user_tenant
     @setup_required
     @plugin_inner_api_only
+    @get_user_tenant
     @plugin_data(payload_type=RequestInvokeModeration)
     @inner_api_ns.doc("plugin_invoke_moderation")
     @inner_api_ns.doc(description="Invoke moderation models through plugin interface")
@@ -225,9 +225,9 @@ class PluginInvokeModerationApi(Resource):
 
 @inner_api_ns.route("/invoke/tool")
 class PluginInvokeToolApi(Resource):
-    @get_user_tenant
     @setup_required
     @plugin_inner_api_only
+    @get_user_tenant
     @plugin_data(payload_type=RequestInvokeTool)
     @inner_api_ns.doc("plugin_invoke_tool")
     @inner_api_ns.doc(description="Invoke tools through plugin interface")
@@ -259,9 +259,9 @@ class PluginInvokeToolApi(Resource):
 
 @inner_api_ns.route("/invoke/parameter-extractor")
 class PluginInvokeParameterExtractorNodeApi(Resource):
-    @get_user_tenant
     @setup_required
     @plugin_inner_api_only
+    @get_user_tenant
     @plugin_data(payload_type=RequestInvokeParameterExtractorNode)
     @inner_api_ns.doc("plugin_invoke_parameter_extractor")
     @inner_api_ns.doc(description="Invoke parameter extractor node through plugin interface")
@@ -292,9 +292,9 @@ class PluginInvokeParameterExtractorNodeApi(Resource):
 
 @inner_api_ns.route("/invoke/question-classifier")
 class PluginInvokeQuestionClassifierNodeApi(Resource):
-    @get_user_tenant
     @setup_required
     @plugin_inner_api_only
+    @get_user_tenant
     @plugin_data(payload_type=RequestInvokeQuestionClassifierNode)
     @inner_api_ns.doc("plugin_invoke_question_classifier")
     @inner_api_ns.doc(description="Invoke question classifier node through plugin interface")
@@ -325,9 +325,9 @@ class PluginInvokeQuestionClassifierNodeApi(Resource):
 
 @inner_api_ns.route("/invoke/app")
 class PluginInvokeAppApi(Resource):
-    @get_user_tenant
     @setup_required
     @plugin_inner_api_only
+    @get_user_tenant
     @plugin_data(payload_type=RequestInvokeApp)
     @inner_api_ns.doc("plugin_invoke_app")
     @inner_api_ns.doc(description="Invoke application through plugin interface")
@@ -357,9 +357,9 @@ class PluginInvokeAppApi(Resource):
 
 @inner_api_ns.route("/invoke/encrypt")
 class PluginInvokeEncryptApi(Resource):
-    @get_user_tenant
     @setup_required
     @plugin_inner_api_only
+    @get_user_tenant
     @plugin_data(payload_type=RequestInvokeEncrypt)
     @inner_api_ns.doc("plugin_invoke_encrypt")
     @inner_api_ns.doc(description="Encrypt or decrypt data through plugin interface")
@@ -384,9 +384,9 @@ class PluginInvokeEncryptApi(Resource):
 
 @inner_api_ns.route("/invoke/summary")
 class PluginInvokeSummaryApi(Resource):
-    @get_user_tenant
     @setup_required
     @plugin_inner_api_only
+    @get_user_tenant
     @plugin_data(payload_type=RequestInvokeSummary)
     @inner_api_ns.doc("plugin_invoke_summary")
     @inner_api_ns.doc(description="Invoke summary functionality through plugin interface")
@@ -414,9 +414,9 @@ class PluginInvokeSummaryApi(Resource):
 
 @inner_api_ns.route("/upload/file/request")
 class PluginUploadFileRequestApi(Resource):
-    @get_user_tenant
     @setup_required
     @plugin_inner_api_only
+    @get_user_tenant
     @plugin_data(payload_type=RequestRequestUploadFile)
     @inner_api_ns.doc("plugin_upload_file_request")
     @inner_api_ns.doc(description="Request signed URL for file upload through plugin interface")
@@ -490,9 +490,9 @@ class PluginDownloadFileRequestApi(Resource):
 
 @inner_api_ns.route("/fetch/app/info")
 class PluginFetchAppInfoApi(Resource):
-    @get_user_tenant
     @setup_required
     @plugin_inner_api_only
+    @get_user_tenant
     @plugin_data(payload_type=RequestFetchAppInfo)
     @inner_api_ns.doc("plugin_fetch_app_info")
     @inner_api_ns.doc(description="Fetch application information through plugin interface")
