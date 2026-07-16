@@ -705,9 +705,7 @@ class TestDatasetDocumentSegmentBatchImportApi:
                 "controllers.console.datasets.datasets_segments.DatasetService.check_dataset_permission",
                 side_effect=services.errors.account.NoPermissionError("No permission"),
             ),
-            patch(
-                "controllers.console.datasets.datasets_segments.DocumentService.get_document"
-            ) as mock_get_document,
+            patch("controllers.console.datasets.datasets_segments.DocumentService.get_document") as mock_get_document,
             patch(
                 "controllers.console.datasets.datasets_segments.batch_create_segment_to_index_task.delay"
             ) as mock_delay,

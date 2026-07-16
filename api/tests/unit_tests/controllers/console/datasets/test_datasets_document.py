@@ -796,9 +796,7 @@ class TestDocumentRetryApi:
                 "controllers.console.datasets.datasets_document.DatasetService.check_dataset_permission",
                 side_effect=services.errors.account.NoPermissionError("No permission"),
             ),
-            patch(
-                "controllers.console.datasets.datasets_document.DocumentService.retry_document"
-            ) as retry_mock,
+            patch("controllers.console.datasets.datasets_document.DocumentService.retry_document") as retry_mock,
         ):
             with pytest.raises(Forbidden):
                 method(api, MagicMock(), user, "ds-1")
@@ -1047,9 +1045,7 @@ class TestDatasetDocumentListApiDelete:
                 "controllers.console.datasets.datasets_document.DatasetService.check_dataset_permission",
                 side_effect=services.errors.account.NoPermissionError("No permission"),
             ),
-            patch(
-                "controllers.console.datasets.datasets_document.DocumentService.delete_documents"
-            ) as delete_mock,
+            patch("controllers.console.datasets.datasets_document.DocumentService.delete_documents") as delete_mock,
         ):
             with pytest.raises(Forbidden):
                 method(api, MagicMock(), user, "ds-1")

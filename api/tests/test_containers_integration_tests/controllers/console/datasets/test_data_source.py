@@ -467,9 +467,7 @@ class TestDataSourceNotionDatasetSyncApi:
                 "controllers.console.datasets.data_source.DatasetService.check_dataset_permission",
                 side_effect=services.errors.account.NoPermissionError("No permission"),
             ),
-            patch(
-                "controllers.console.datasets.data_source.document_indexing_sync_task.delay"
-            ) as mock_delay,
+            patch("controllers.console.datasets.data_source.document_indexing_sync_task.delay") as mock_delay,
         ):
             with pytest.raises(Forbidden):
                 method(api, MagicMock(), current_user, "ds-1")
@@ -547,9 +545,7 @@ class TestDataSourceNotionDocumentSyncApi:
                 side_effect=services.errors.account.NoPermissionError("No permission"),
             ),
             patch("controllers.console.datasets.data_source.DocumentService.get_document") as mock_get_document,
-            patch(
-                "controllers.console.datasets.data_source.document_indexing_sync_task.delay"
-            ) as mock_delay,
+            patch("controllers.console.datasets.data_source.document_indexing_sync_task.delay") as mock_delay,
         ):
             with pytest.raises(Forbidden):
                 method(api, MagicMock(), current_user, "ds-1", "doc-1")

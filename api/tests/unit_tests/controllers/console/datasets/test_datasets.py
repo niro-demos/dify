@@ -1362,9 +1362,7 @@ class TestDatasetEnableApiApi:
         with (
             app.test_request_context("/"),
             patch("controllers.console.datasets.datasets.DatasetService.get_dataset", return_value=MagicMock()),
-            patch(
-                "controllers.console.datasets.datasets.DatasetService.check_dataset_permission", return_value=None
-            ),
+            patch("controllers.console.datasets.datasets.DatasetService.check_dataset_permission", return_value=None),
             patch("controllers.console.datasets.datasets.DatasetService.update_dataset_api_status", return_value=None),
         ):
             response, status = method(api, MagicMock(), user, "dataset-1", "enable")
@@ -1378,9 +1376,7 @@ class TestDatasetEnableApiApi:
         with (
             app.test_request_context("/"),
             patch("controllers.console.datasets.datasets.DatasetService.get_dataset", return_value=MagicMock()),
-            patch(
-                "controllers.console.datasets.datasets.DatasetService.check_dataset_permission", return_value=None
-            ),
+            patch("controllers.console.datasets.datasets.DatasetService.check_dataset_permission", return_value=None),
             patch("controllers.console.datasets.datasets.DatasetService.update_dataset_api_status", return_value=None),
         ):
             response, status = method(api, MagicMock(), user, "dataset-1", "disable")
