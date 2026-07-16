@@ -9,9 +9,16 @@ from uuid import uuid4
 
 import pytest
 from flask import Flask
+from werkzeug.exceptions import Forbidden
 
+import services
 from controllers.console.datasets import data_source as module
-from controllers.console.datasets.data_source import DataSourceApi, DataSourceNotionListApi
+from controllers.console.datasets.data_source import (
+    DataSourceApi,
+    DataSourceNotionDatasetSyncApi,
+    DataSourceNotionDocumentSyncApi,
+    DataSourceNotionListApi,
+)
 from models import Account, DataSourceOauthBinding
 
 ControllerMethod = Callable[..., tuple[dict[str, object], int]]
@@ -183,3 +190,93 @@ def test_notion_pre_import_pages_serializes_frontend_list_shape(flask_app: Flask
     }
     runtime.get_online_document_pages.assert_called_once()
     assert runtime.get_online_document_pages.call_args.kwargs["datasource_parameters"] == {}
+
+
+def test_notion_dataset_sync_success(flask_app: Flask, current_user: Account) -> None:
+    api = DataSourceNotionDatasetSyncApi()
+    method = unwrap(api.get)
+    session = MagicMock()
+    dataset = MagicMock(tenant_id="tenant-1")
+    documents = [MagicMock(id="doc-1"), MagicMock(id="doc-2")]
+
+    with (
+        flask_app.test_request_context("/"),
+        patch.object(module.DatasetService, "get_dataset", return_value=dataset),
+        patch.object(module.DatasetService, "check_dataset_permission", return_value=None),
+        patch.object(module.DocumentService, "get_document_by_dataset_id", return_value=documents),
+        patch.object(module.document_indexing_sync_task, "delay") as mock_delay,
+    ):
+        response, status = method(api, session, current_user, uuid4())
+
+    assert status == 200
+    assert response == {"result": "success"}
+    assert mock_delay.call_count == 2
+
+
+def test_notion_dataset_sync_cross_tenant_denied(flask_app: Flask, current_user: Account) -> None:
+    """Regression test for TC-F9234354: a caller from another tenant must not be able to
+    trigger a Notion re-sync for an unrelated workspace's dataset."""
+    api = DataSourceNotionDatasetSyncApi()
+    method = unwrap(api.get)
+    session = MagicMock()
+    dataset = MagicMock(tenant_id="other-tenant")
+
+    with (
+        flask_app.test_request_context("/"),
+        patch.object(module.DatasetService, "get_dataset", return_value=dataset),
+        patch.object(
+            module.DatasetService,
+            "check_dataset_permission",
+            side_effect=services.errors.account.NoPermissionError("No permission"),
+        ),
+        patch.object(module.document_indexing_sync_task, "delay") as mock_delay,
+    ):
+        with pytest.raises(Forbidden):
+            method(api, session, current_user, uuid4())
+    mock_delay.assert_not_called()
+
+
+def test_notion_document_sync_success(flask_app: Flask, current_user: Account) -> None:
+    api = DataSourceNotionDocumentSyncApi()
+    method = unwrap(api.get)
+    session = MagicMock()
+    dataset = MagicMock(tenant_id="tenant-1")
+    document = MagicMock(id="doc-1")
+
+    with (
+        flask_app.test_request_context("/"),
+        patch.object(module.DatasetService, "get_dataset", return_value=dataset),
+        patch.object(module.DatasetService, "check_dataset_permission", return_value=None),
+        patch.object(module.DocumentService, "get_document", return_value=document),
+        patch.object(module.document_indexing_sync_task, "delay") as mock_delay,
+    ):
+        response, status = method(api, session, current_user, uuid4(), uuid4())
+
+    assert status == 200
+    assert response == {"result": "success"}
+    mock_delay.assert_called_once()
+
+
+def test_notion_document_sync_cross_tenant_denied(flask_app: Flask, current_user: Account) -> None:
+    """Regression test for TC-F9234354: a caller from another tenant must not be able to
+    trigger a Notion re-sync for a document in an unrelated workspace's dataset."""
+    api = DataSourceNotionDocumentSyncApi()
+    method = unwrap(api.get)
+    session = MagicMock()
+    dataset = MagicMock(tenant_id="other-tenant")
+
+    with (
+        flask_app.test_request_context("/"),
+        patch.object(module.DatasetService, "get_dataset", return_value=dataset),
+        patch.object(
+            module.DatasetService,
+            "check_dataset_permission",
+            side_effect=services.errors.account.NoPermissionError("No permission"),
+        ),
+        patch.object(module.DocumentService, "get_document") as mock_get_document,
+        patch.object(module.document_indexing_sync_task, "delay") as mock_delay,
+    ):
+        with pytest.raises(Forbidden):
+            method(api, session, current_user, uuid4(), uuid4())
+    mock_get_document.assert_not_called()
+    mock_delay.assert_not_called()

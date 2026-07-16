@@ -5,8 +5,9 @@ from unittest.mock import MagicMock, PropertyMock, patch
 import pytest
 from flask import Flask
 from pytest_mock import MockerFixture
-from werkzeug.exceptions import NotFound
+from werkzeug.exceptions import Forbidden, NotFound
 
+import services
 from controllers.console import console_ns
 from controllers.console.datasets.metadata import (
     DatasetMetadataApi,
@@ -96,12 +97,13 @@ class TestDatasetMetadataCreateApi:
 
 
 class TestDatasetMetadataGetApi:
-    def test_get_metadata_success(self, app: Flask, dataset, dataset_id):
+    def test_get_metadata_success(self, app: Flask, current_user, dataset, dataset_id):
         api = DatasetMetadataCreateApi()
         method = unwrap(api.get)
         with (
             app.test_request_context("/"),
             patch.object(DatasetService, "get_dataset", return_value=dataset),
+            patch.object(DatasetService, "check_dataset_permission", return_value=None),
             patch.object(
                 MetadataService,
                 "get_dataset_metadatas",
@@ -111,17 +113,36 @@ class TestDatasetMetadataGetApi:
                 },
             ),
         ):
-            result, status = method(api, MagicMock(), dataset_id)
+            result, status = method(api, MagicMock(), current_user, dataset_id)
         assert status == 200
         assert result["doc_metadata"] == [{"id": "m1", "name": "author", "type": "string", "count": 0}]
         assert result["built_in_field_enabled"] is False
 
-    def test_get_metadata_dataset_not_found(self, app: Flask, dataset_id):
+    def test_get_metadata_cross_tenant_denied(self, app: Flask, current_user, dataset, dataset_id):
+        """Regression test for TC-9D133605: a caller from another tenant must not be able
+        to read a dataset's metadata schema."""
+        api = DatasetMetadataCreateApi()
+        method = unwrap(api.get)
+        with (
+            app.test_request_context("/"),
+            patch.object(DatasetService, "get_dataset", return_value=dataset),
+            patch.object(
+                DatasetService,
+                "check_dataset_permission",
+                side_effect=services.errors.account.NoPermissionError("No permission"),
+            ),
+            patch.object(MetadataService, "get_dataset_metadatas") as mock_get_metadatas,
+        ):
+            with pytest.raises(Forbidden):
+                method(api, MagicMock(), current_user, dataset_id)
+        mock_get_metadatas.assert_not_called()
+
+    def test_get_metadata_dataset_not_found(self, app: Flask, current_user, dataset_id):
         api = DatasetMetadataCreateApi()
         method = unwrap(api.get)
         with app.test_request_context("/"), patch.object(DatasetService, "get_dataset", return_value=None):
             with pytest.raises(NotFound):
-                method(api, MagicMock(), dataset_id)
+                method(api, MagicMock(), current_user, dataset_id)
 
 
 class TestDatasetMetadataApi:

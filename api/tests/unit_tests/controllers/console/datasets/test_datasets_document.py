@@ -728,9 +728,10 @@ class TestDocumentStatusApi:
 
 
 class TestDocumentRetryApi:
-    def test_retry_archived_document_skipped(self, app: Flask, patch_tenant, patch_dataset):
+    def test_retry_archived_document_skipped(self, app: Flask, patch_tenant, patch_dataset, patch_permission):
         api = DocumentRetryApi()
         method = unwrap(api.post)
+        user, _ = patch_tenant
         payload = {"document_ids": ["doc-1"]}
         doc = MagicMock(indexing_status="indexing")
         with (
@@ -740,13 +741,14 @@ class TestDocumentRetryApi:
             patch("controllers.console.datasets.datasets_document.DocumentService.check_archived", return_value=True),
             patch("controllers.console.datasets.datasets_document.DocumentService.retry_document") as retry_mock,
         ):
-            resp, status = method(api, MagicMock(), "ds-1")
+            resp, status = method(api, MagicMock(), user, "ds-1")
         assert status == 204
         retry_mock.assert_called_once_with("ds-1", [], ANY)
 
-    def test_retry_success(self, app: Flask, patch_tenant, patch_dataset):
+    def test_retry_success(self, app: Flask, patch_tenant, patch_dataset, patch_permission):
         api = DocumentRetryApi()
         method = unwrap(api.post)
+        user, _ = patch_tenant
         payload = {"document_ids": ["doc-1"]}
         document = MagicMock(indexing_status=IndexingStatus.INDEXING, archived=False)
         with (
@@ -758,13 +760,14 @@ class TestDocumentRetryApi:
                 "controllers.console.datasets.datasets_document.DocumentService.retry_document", return_value=None
             ) as retry_mock,
         ):
-            response, status = method(api, MagicMock(), "ds-1")
+            response, status = method(api, MagicMock(), user, "ds-1")
         assert status == 204
         retry_mock.assert_called_once_with("ds-1", [document], ANY)
 
-    def test_retry_skips_completed_document(self, app: Flask, patch_tenant, patch_dataset):
+    def test_retry_skips_completed_document(self, app: Flask, patch_tenant, patch_dataset, patch_permission):
         api = DocumentRetryApi()
         method = unwrap(api.post)
+        user, _ = patch_tenant
         payload = {"document_ids": ["doc-1"]}
         document = MagicMock(indexing_status=IndexingStatus.COMPLETED, archived=False)
         with (
@@ -775,26 +778,59 @@ class TestDocumentRetryApi:
                 "controllers.console.datasets.datasets_document.DocumentService.retry_document", return_value=None
             ) as retry_mock,
         ):
-            response, status = method(api, MagicMock(), "ds-1")
+            response, status = method(api, MagicMock(), user, "ds-1")
         assert status == 204
         retry_mock.assert_called_once_with("ds-1", [], ANY)
 
+    def test_retry_cross_tenant_denied(self, app: Flask, patch_tenant, patch_dataset):
+        """Regression test for TC-0EBC78AD: a caller from another tenant must not be able
+        to force reprocessing of documents in an unrelated workspace's dataset."""
+        api = DocumentRetryApi()
+        method = unwrap(api.post)
+        user, _ = patch_tenant
+        payload = {"document_ids": ["doc-1"]}
+        with (
+            app.test_request_context("/", json=payload),
+            patch.object(type(console_ns), "payload", payload),
+            patch(
+                "controllers.console.datasets.datasets_document.DatasetService.check_dataset_permission",
+                side_effect=services.errors.account.NoPermissionError("No permission"),
+            ),
+            patch(
+                "controllers.console.datasets.datasets_document.DocumentService.retry_document"
+            ) as retry_mock,
+        ):
+            with pytest.raises(Forbidden):
+                method(api, MagicMock(), user, "ds-1")
+        retry_mock.assert_not_called()
+
 
 class TestDocumentPipelineExecutionLogApi:
-    def test_get_log_success(self, app: Flask, patch_tenant, patch_dataset):
+    def test_get_log_success(self, app: Flask, patch_tenant):
         api = DocumentPipelineExecutionLogApi()
         method = unwrap(api.get)
+        user, tenant_id = patch_tenant
         log = MagicMock(datasource_info="{}", datasource_type="file", input_data={}, datasource_node_id="n1")
         session = MagicMock()
         session.scalar.return_value = log
         with (
             app.test_request_context("/"),
-            patch(
-                "controllers.console.datasets.datasets_document.DocumentService.get_document", return_value=MagicMock()
-            ),
+            patch.object(api, "get_document", return_value=MagicMock()),
         ):
-            response, status = method(api, session, "ds-1", "doc-1")
+            response, status = method(api, session, tenant_id, user, "ds-1", "doc-1")
         assert status == 200
+
+    def test_get_log_cross_tenant_denied(self, app: Flask, patch_tenant):
+        """Regression test for TC-7E2E0F68: a caller from another tenant must not be able
+        to read the ingestion-pipeline execution log of a document in an unrelated workspace."""
+        api = DocumentPipelineExecutionLogApi()
+        method = unwrap(api.get)
+        user, tenant_id = patch_tenant
+        session = MagicMock()
+        with app.test_request_context("/"), patch.object(api, "get_document", side_effect=Forbidden("No permission.")):
+            with pytest.raises(Forbidden):
+                method(api, session, tenant_id, user, "ds-1", "doc-1")
+        session.scalar.assert_not_called()
 
 
 class TestDocumentGenerateSummaryApi:
@@ -952,10 +988,11 @@ class TestDocumentBatchDownloadZipApi:
 
 
 class TestDatasetDocumentListApiDelete:
-    def test_delete_success(self, app: Flask, patch_tenant, patch_dataset):
+    def test_delete_success(self, app: Flask, patch_tenant, patch_dataset, patch_permission):
         """Test successful deletion of documents"""
         api = DatasetDocumentListApi()
         method = unwrap(api.delete)
+        user, _ = patch_tenant
         with (
             app.test_request_context("/?document_id=doc-1&document_id=doc-2"),
             patch(
@@ -964,13 +1001,14 @@ class TestDatasetDocumentListApiDelete:
             ),
             patch("controllers.console.datasets.datasets_document.DocumentService.delete_documents", return_value=None),
         ):
-            response, status = method(api, MagicMock(), "ds-1")
+            response, status = method(api, MagicMock(), user, "ds-1")
         assert status == 204
 
-    def test_delete_indexing_error(self, app: Flask, patch_tenant, patch_dataset):
+    def test_delete_indexing_error(self, app: Flask, patch_tenant, patch_dataset, patch_permission):
         """Test deletion with indexing error"""
         api = DatasetDocumentListApi()
         method = unwrap(api.delete)
+        user, _ = patch_tenant
         with (
             app.test_request_context("/?document_id=doc-1"),
             patch(
@@ -983,18 +1021,39 @@ class TestDatasetDocumentListApiDelete:
             ),
         ):
             with pytest.raises(DocumentIndexingError):
-                method(api, MagicMock(), "ds-1")
+                method(api, MagicMock(), user, "ds-1")
 
     def test_delete_dataset_not_found(self, app: Flask, patch_tenant):
         """Test deletion when dataset not found"""
         api = DatasetDocumentListApi()
         method = unwrap(api.delete)
+        user, _ = patch_tenant
         with (
             app.test_request_context("/?document_id=doc-1"),
             patch("controllers.console.datasets.datasets_document.DatasetService.get_dataset", return_value=None),
         ):
             with pytest.raises(NotFound):
-                method(api, MagicMock(), "ds-1")
+                method(api, MagicMock(), user, "ds-1")
+
+    def test_delete_cross_tenant_denied(self, app: Flask, patch_tenant, patch_dataset):
+        """Regression test for TC-E8FE8E42: a caller from another tenant must not be able
+        to delete documents out of an unrelated workspace's knowledge base."""
+        api = DatasetDocumentListApi()
+        method = unwrap(api.delete)
+        user, _ = patch_tenant
+        with (
+            app.test_request_context("/?document_id=doc-1"),
+            patch(
+                "controllers.console.datasets.datasets_document.DatasetService.check_dataset_permission",
+                side_effect=services.errors.account.NoPermissionError("No permission"),
+            ),
+            patch(
+                "controllers.console.datasets.datasets_document.DocumentService.delete_documents"
+            ) as delete_mock,
+        ):
+            with pytest.raises(Forbidden):
+                method(api, MagicMock(), user, "ds-1")
+        delete_mock.assert_not_called()
 
 
 class TestDocumentBatchIndexingEstimateApi:
