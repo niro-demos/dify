@@ -17,19 +17,17 @@ from controllers.web.error import (
 )
 from controllers.web.error import InvokeRateLimitError as InvokeRateLimitHttpError
 from controllers.web.wraps import WebApiResource
-from core.app.apps.base_app_queue_manager import AppQueueManager
 from core.app.entities.app_invoke_entities import InvokeFrom
 from core.errors.error import (
     ModelCurrentlyNotSupportError,
     ProviderTokenNotInitError,
     QuotaExceededError,
 )
-from extensions.ext_redis import redis_client
-from graphon.graph_engine.manager import GraphEngineManager
 from graphon.model_runtime.errors.invoke import InvokeError
 from libs import helper
 from models.model import App, AppMode, EndUser
 from services.app_generate_service import AppGenerateService
+from services.app_task_service import AppTaskService
 from services.errors.llm import InvokeRateLimitError
 
 logger = logging.getLogger(__name__)
@@ -123,11 +121,16 @@ class WorkflowTaskStopApi(WebApiResource):
         if app_mode != AppMode.WORKFLOW:
             raise NotWorkflowAppError()
 
-        # Stop using both mechanisms for backward compatibility
-        # Legacy stop flag mechanism (without user check)
-        AppQueueManager.set_stop_flag_no_user_check(task_id)
-
-        # New graph engine command channel mechanism
-        GraphEngineManager(redis_client).send_stop_command(task_id)
+        # Only the end-user who owns task_id may stop it. AppTaskService.stop_task
+        # verifies ownership (via the generate_task_belong:<task_id> redis key)
+        # before touching either the legacy stop-flag or the GraphEngine command
+        # channel; it silently no-ops for a task_id owned by someone else (or
+        # unknown), keeping the "always success" response shape for the caller.
+        AppTaskService.stop_task(
+            task_id=task_id,
+            invoke_from=InvokeFrom.WEB_APP,
+            user_id=end_user.id,
+            app_mode=app_mode,
+        )
 
         return SimpleResultResponse(result="success").model_dump(mode="json")

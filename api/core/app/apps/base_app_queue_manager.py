@@ -149,27 +149,38 @@ class AppQueueManager(ABC):
         raise NotImplementedError
 
     @classmethod
-    def set_stop_flag(cls, task_id: str, invoke_from: InvokeFrom, user_id: str):
+    def set_stop_flag(cls, task_id: str, invoke_from: InvokeFrom, user_id: str) -> bool:
         """
-        Set task stop flag
-        :return:
+        Set task stop flag, but only if `task_id` is recorded as belonging to `user_id`.
+
+        :return: True if the caller owns the task and the stop flag was set,
+            False if the task is unknown or owned by someone else (a silent no-op).
         """
         result: Any | None = redis_client.get(cls._generate_task_belong_cache_key(task_id))
         if result is None:
-            return
+            return False
 
         user_prefix = "account" if invoke_from in {InvokeFrom.EXPLORE, InvokeFrom.DEBUGGER} else "end-user"
         if result.decode("utf-8") != f"{user_prefix}-{user_id}":
-            return
+            return False
 
         stopped_cache_key = cls._generate_stopped_cache_key(task_id)
         redis_client.setex(stopped_cache_key, 600, 1)
+        return True
 
     @classmethod
     def set_stop_flag_no_user_check(cls, task_id: str) -> None:
         """
         Set task stop flag without user permission check.
         This method allows stopping workflows without user context.
+
+        Intended for trusted internal/system callers only (e.g. an
+        application-level cleanup that has already authorized the caller by
+        other means). Never call this directly from an end-user- or
+        account-authenticated route: it accepts any `task_id`, including one
+        belonging to another tenant, with no ownership check at all. Web/console
+        routes must go through `set_stop_flag` (or `AppTaskService.stop_task`),
+        which verifies the `generate_task_belong:<task_id>` owner first.
 
         :param task_id: The task ID to stop
         :return:
