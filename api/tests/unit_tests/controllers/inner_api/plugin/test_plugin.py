@@ -13,7 +13,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from flask import Flask
 from sqlalchemy.orm import Session
+from werkzeug.exceptions import HTTPException
 
+from configs import dify_config
 from controllers.inner_api.plugin import plugin as plugin_module
 from controllers.inner_api.plugin.plugin import (
     PluginDownloadFileRequestApi,
@@ -59,6 +61,75 @@ def _extract_raw_post(cls):
             pass
 
     return bottom
+
+
+class TestPluginRouteRejectsUnauthenticatedCallerBeforeTenantLookup:
+    """Regression test for TC-647C5D8F.
+
+    Invariant: the plugin-daemon inner API must not look up tenants, look
+    up/create internal EndUser records, or reveal whether a tenant ID exists
+    to a caller that has not presented the internal shared secret
+    (`X-Inner-Api-Key`).
+
+    Every route below is decorated `get_user_tenant` -> `setup_required` ->
+    `plugin_inner_api_only` -> `plugin_data`. Because Python applies the
+    outermost (topmost) decorator's wrapper first at request time, listing
+    `get_user_tenant` first previously ran the tenant lookup and EndUser
+    create/lookup (`get_user`) *before* `plugin_inner_api_only` ever checked
+    the shared secret -- letting a fully unauthenticated caller learn tenant
+    existence and trigger EndUser writes. `plugin_inner_api_only` must be
+    the outermost credential gate, so this test asserts both the 404 and
+    that neither lookup ran.
+    """
+
+    @pytest.mark.parametrize(
+        "api_cls",
+        [
+            PluginInvokeLLMApi,
+            PluginInvokeLLMWithStructuredOutputApi,
+            PluginInvokeTextEmbeddingApi,
+            PluginInvokeRerankApi,
+            PluginInvokeTTSApi,
+            PluginInvokeSpeech2TextApi,
+            PluginInvokeModerationApi,
+            PluginInvokeToolApi,
+            PluginInvokeParameterExtractorNodeApi,
+            PluginInvokeQuestionClassifierNodeApi,
+            PluginInvokeAppApi,
+            PluginInvokeEncryptApi,
+            PluginInvokeSummaryApi,
+            PluginUploadFileRequestApi,
+            PluginFetchAppInfoApi,
+        ],
+    )
+    def test_rejects_unauthenticated_caller_before_tenant_lookup(
+        self, api_cls, app: Flask, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Arrange: no X-Inner-Api-Key header at all -- fully unauthenticated caller.
+        monkeypatch.setattr(app, "login_manager", MagicMock(), raising=False)
+        with app.test_request_context(
+            json={"tenant_id": "11111111-1111-1111-1111-111111111111", "user_id": "probe-user"},
+            headers={},
+        ):
+            with (
+                patch.object(dify_config, "PLUGIN_DAEMON_KEY", "plugin-daemon-key"),
+                patch.object(dify_config, "INNER_API_KEY_FOR_PLUGIN", "expected-plugin-key"),
+                patch.object(dify_config, "EDITION", "CLOUD"),
+                patch("controllers.inner_api.plugin.wraps.db.session.get") as mock_tenant_lookup,
+                patch("controllers.inner_api.plugin.wraps.get_user") as mock_get_user,
+            ):
+                mock_tenant_lookup.return_value = MagicMock()
+                mock_get_user.return_value = MagicMock()
+
+                # Act & Assert: rejected with 404 by plugin_inner_api_only ...
+                with pytest.raises(HTTPException) as exc_info:
+                    api_cls().post()
+                assert exc_info.value.code == 404
+
+                # ... and neither the tenant-existence oracle nor the
+                # EndUser lookup/create ever ran.
+                mock_tenant_lookup.assert_not_called()
+                mock_get_user.assert_not_called()
 
 
 class TestPluginInvokeLLMApi:
