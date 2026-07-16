@@ -450,6 +450,77 @@ class TestAccountService:
         # Verify password validation was called
         mock_password_dependencies["valid_password"].assert_called_once_with("short")
 
+    def test_update_account_password_revokes_stored_refresh_token(
+        self, sqlite_session: Session, mock_password_dependencies
+    ):
+        """TC-63F7F852 regression: rotating the password must revoke whatever
+        refresh token is currently stored for the account (the same way
+        `logout` does), so a refresh token issued before the change cannot
+        keep minting new access tokens afterward."""
+        account = Account(
+            name="Test User",
+            email="test@example.com",
+            password="hashed_password",
+            password_salt="salt",
+        )
+        sqlite_session.add(account)
+        sqlite_session.commit()
+        mock_password_dependencies["compare_password"].return_value = True
+        mock_password_dependencies["valid_password"].return_value = None
+        mock_password_dependencies["hash_password"].return_value = b"new_hashed_password"
+
+        with patch("services.account_service.redis_client") as mock_redis:
+            mock_redis.get.return_value = b"stolen-refresh-token"
+
+            AccountService.update_account_password(account, "old_password", "new_password123", session=sqlite_session)
+
+            mock_redis.delete.assert_any_call("refresh_token:stolen-refresh-token")
+            mock_redis.delete.assert_any_call(f"account_refresh_token:{account.id}")
+
+    def test_update_account_password_invalidates_outstanding_access_tokens(
+        self, sqlite_session: Session, mock_password_dependencies
+    ):
+        """TC-63F7F852 regression: rotating the password must also mark
+        already-issued access tokens as stale, so a stolen access token
+        stops working on its very next request instead of riding out its
+        own TTL (see `AccountService.is_access_token_stale`)."""
+        account = Account(
+            name="Test User",
+            email="test@example.com",
+            password="hashed_password",
+            password_salt="salt",
+        )
+        sqlite_session.add(account)
+        sqlite_session.commit()
+        mock_password_dependencies["compare_password"].return_value = True
+        mock_password_dependencies["valid_password"].return_value = None
+        mock_password_dependencies["hash_password"].return_value = b"new_hashed_password"
+
+        with patch("services.account_service.redis_client") as mock_redis:
+            mock_redis.get.return_value = None  # no refresh token stored, unrelated to this assertion
+
+            AccountService.update_account_password(account, "old_password", "new_password123", session=sqlite_session)
+
+            invalidation_key = f"account_token_invalidated_before:{account.id}"
+            setex_keys = [call.args[0] for call in mock_redis.setex.call_args_list]
+            assert invalidation_key in setex_keys
+
+    def test_is_access_token_stale(self):
+        """`is_access_token_stale` compares a token's `iat` against the
+        account's invalidation cutoff (or fails open when there is none / redis
+        is unavailable, matching this module's other rate-limit checks)."""
+        with patch("services.account_service.redis_client") as mock_redis:
+            mock_redis.get.return_value = b"2000000000"
+            assert AccountService.is_access_token_stale("acc-1", 1_999_999_999) is True
+            assert AccountService.is_access_token_stale("acc-1", 2_000_000_001) is False
+
+        with patch("services.account_service.redis_client") as mock_redis_no_cutoff:
+            mock_redis_no_cutoff.get.return_value = None
+            assert AccountService.is_access_token_stale("acc-1", 1_234) is False
+
+        # No `iat` claim at all (e.g. an older token format) is treated as not stale.
+        assert AccountService.is_access_token_stale("acc-1", None) is False
+
     # ==================== User Loading Tests ====================
 
     def test_load_user_success(self, sqlite_session: Session):

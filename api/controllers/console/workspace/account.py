@@ -31,6 +31,7 @@ from controllers.console.auth.error import (
 from controllers.console.error import AccountInFreezeError, AccountNotFound, EmailSendIpLimitError
 from controllers.console.workspace.error import (
     AccountAlreadyInitedError,
+    AccountDeletionLimitError,
     CurrentPasswordIncorrectError,
     InvalidAccountDeletionCodeError,
     InvalidInvitationCodeError,
@@ -511,9 +512,14 @@ class AccountDeleteApi(Resource):
         payload = console_ns.payload or {}
         args = AccountDeletePayload.model_validate(payload)
 
+        if AccountService.is_account_deletion_error_rate_limit(account.email):
+            raise AccountDeletionLimitError()
+
         if not AccountService.verify_account_deletion_code(args.token, args.code):
+            AccountService.add_account_deletion_error_rate_limit(account.email)
             raise InvalidAccountDeletionCodeError()
 
+        AccountService.reset_account_deletion_error_rate_limit(account.email)
         AccountService.delete_account(account, session=db.session())
 
         return SimpleResultResponse(result="success").model_dump(mode="json")
@@ -766,6 +772,8 @@ class CheckEmailUnique(Resource):
     @console_ns.expect(console_ns.models[CheckEmailUniquePayload.__name__])
     @console_ns.response(HTTPStatus.OK, "Success", console_ns.models[SimpleResultResponse.__name__])
     @setup_required
+    @login_required
+    @account_initialization_required
     def post(self):
         payload = console_ns.payload or {}
         args = CheckEmailUniquePayload.model_validate(payload)

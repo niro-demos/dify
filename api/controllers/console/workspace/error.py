@@ -37,6 +37,12 @@ class InvalidAccountDeletionCodeError(BaseHTTPException):
     code = 400
 
 
+class AccountDeletionLimitError(BaseHTTPException):
+    error_code = "account_deletion_limit"
+    description = "Too many failed account deletion attempts. Please try again in 24 hours."
+    code = 429
+
+
 class InvalidMemberRoleError(BaseHTTPException):
     error_code = "invalid_role"
     description = "Invalid role."

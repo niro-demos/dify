@@ -90,6 +90,10 @@ def _load_user_from_request(request_from_flask_login: Request, session: Session)
             raise Unauthorized("Invalid Authorization token.")
         if not user_id:
             raise Unauthorized("Invalid Authorization token.")
+        if AccountService.is_access_token_stale(user_id, decoded.get("iat")):
+            # Issued before the account last revoked its sessions (e.g. a password
+            # change) -- see AccountService.invalidate_account_access_tokens.
+            raise Unauthorized("Invalid Authorization token.")
 
         logged_in_account = AccountService.load_logged_in_account(account_id=user_id, session=session)
         return logged_in_account
@@ -109,6 +113,8 @@ def _load_user_from_request(request_from_flask_login: Request, session: Session)
         user_id = decoded.get("user_id")
         source = decoded.get("token_source")
         if source or not user_id:
+            return None
+        if AccountService.is_access_token_stale(user_id, decoded.get("iat")):
             return None
         return AccountService.load_logged_in_account(account_id=user_id, session=session)
     elif request.blueprint == "web":
