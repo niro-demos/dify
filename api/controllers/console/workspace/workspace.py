@@ -29,9 +29,13 @@ from controllers.console import console_ns
 from controllers.console.admin import admin_required
 from controllers.console.error import AccountNotLinkTenantError
 from controllers.console.wraps import (
+    RBACPermission,
+    RBACResourceScope,
     account_initialization_required,
     cloud_edition_billing_resource_check,
+    is_admin_or_owner_required,
     only_edition_enterprise,
+    rbac_permission_required,
     setup_required,
     with_current_tenant_id,
     with_current_user,
@@ -360,6 +364,8 @@ class CustomConfigWorkspaceApi(Resource):
     @console_ns.response(HTTPStatus.OK, "Success", console_ns.models[WorkspaceTenantResultResponse.__name__])
     @setup_required
     @login_required
+    @is_admin_or_owner_required
+    @rbac_permission_required(RBACResourceScope.WORKSPACE, RBACPermission.CUSTOMIZATION_MANAGE, resource_required=False)
     @account_initialization_required
     @cloud_edition_billing_resource_check("workspace_custom")
     @with_current_tenant_id
@@ -436,6 +442,8 @@ class WorkspaceInfoApi(Resource):
     @console_ns.response(HTTPStatus.OK, "Success", console_ns.models[WorkspaceTenantResultResponse.__name__])
     @setup_required
     @login_required
+    @is_admin_or_owner_required
+    @rbac_permission_required(RBACResourceScope.WORKSPACE, RBACPermission.CUSTOMIZATION_MANAGE, resource_required=False)
     @account_initialization_required
     # Change workspace name
     @with_current_tenant_id

@@ -579,6 +579,8 @@ class ToolBuiltinProviderAddApi(Resource):
     )
     @setup_required
     @login_required
+    @is_admin_or_owner_required
+    @rbac_permission_required(RBACResourceScope.WORKSPACE, RBACPermission.CREDENTIAL_MANAGE, resource_required=False)
     @account_initialization_required
     @with_current_user
     @with_current_tenant_id
@@ -1277,6 +1279,8 @@ class ToolOAuthCustomClient(Resource):
     )
     @setup_required
     @login_required
+    @is_admin_or_owner_required
+    @rbac_permission_required(RBACResourceScope.WORKSPACE, RBACPermission.CREDENTIAL_MANAGE, resource_required=False)
     @account_initialization_required
     @with_current_tenant_id
     def delete(self, current_tenant_id: str, provider: str):
@@ -1345,6 +1349,7 @@ class ToolProviderMCPApi(Resource):
     )
     @setup_required
     @login_required
+    @is_admin_or_owner_required
     @account_initialization_required
     @rbac_permission_required(RBACResourceScope.WORKSPACE, RBACPermission.MCP_MANAGE, resource_required=False)
     @with_current_user
@@ -1400,6 +1405,7 @@ class ToolProviderMCPApi(Resource):
     @console_ns.response(200, "MCP provider updated successfully", console_ns.models[SimpleResultResponse.__name__])
     @setup_required
     @login_required
+    @is_admin_or_owner_required
     @account_initialization_required
     @rbac_permission_required(RBACResourceScope.WORKSPACE, RBACPermission.MCP_MANAGE, resource_required=False)
     @with_current_tenant_id
@@ -1454,6 +1460,7 @@ class ToolProviderMCPApi(Resource):
     @console_ns.response(200, "Success", console_ns.models[SimpleResultResponse.__name__])
     @setup_required
     @login_required
+    @is_admin_or_owner_required
     @account_initialization_required
     @rbac_permission_required(RBACResourceScope.WORKSPACE, RBACPermission.MCP_MANAGE, resource_required=False)
     @with_current_tenant_id

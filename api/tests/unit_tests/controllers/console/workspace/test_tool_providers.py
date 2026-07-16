@@ -287,7 +287,12 @@ def test_tool_provider_list_calls_service_with_query(
 def test_builtin_provider_add_passes_payload(
     app: Flask, controller_module: ModuleType, monkeypatch: pytest.MonkeyPatch
 ):
+    # Adding a team-wide builtin tool credential is owner/admin-only (see
+    # TC-B66EF0FA): use a privileged role so this test still exercises the
+    # payload-forwarding behavior it's actually about, now that the real
+    # is_admin_or_owner_required gate applies to this endpoint.
     user = _mock_account()
+    user.role = TenantAccountRole.OWNER
     _set_current_account(monkeypatch, controller_module, user, "tenant-456")
 
     service_mock = MagicMock(return_value={"result": "success"})
