@@ -137,6 +137,9 @@ ACCOUNT_REFRESH_TOKEN_PREFIX = "account_refresh_token:"
 REFRESH_TOKEN_EXPIRY = timedelta(days=dify_config.REFRESH_TOKEN_EXPIRE_DAYS)
 ACCOUNT_LAST_ACTIVE_REFRESH_PREFIX = "account_last_active_refresh:"
 ACCOUNT_LAST_ACTIVE_REFRESH_INTERVAL = timedelta(minutes=10)
+# Marks the point in time before which a console access token for an account is no longer
+# honoured (see `AccountService.invalidate_account_access_tokens` / `is_access_token_stale`).
+ACCOUNT_TOKEN_INVALIDATION_PREFIX = "account_token_invalidated_before:"
 
 
 class AccountService:
@@ -161,6 +164,7 @@ class AccountService:
     CHANGE_EMAIL_MAX_ERROR_LIMITS = 5
     OWNER_TRANSFER_MAX_ERROR_LIMITS = 5
     EMAIL_REGISTER_MAX_ERROR_LIMITS = 5
+    ACCOUNT_DELETION_MAX_ERROR_LIMITS = 5
 
     @staticmethod
     def _resolve_legacy_role_id(tenant_id: str, account_id: str, role: TenantAccountRole) -> str:
@@ -239,6 +243,10 @@ class AccountService:
         return f"{ACCOUNT_LAST_ACTIVE_REFRESH_PREFIX}{account_id}"
 
     @staticmethod
+    def _get_account_token_invalidation_key(account_id: str) -> str:
+        return f"{ACCOUNT_TOKEN_INVALIDATION_PREFIX}{account_id}"
+
+    @staticmethod
     @redis_fallback(default_return=True)
     def _should_refresh_account_last_active(account_id: str) -> bool:
         return bool(
@@ -279,6 +287,71 @@ class AccountService:
     def _delete_refresh_token(refresh_token: str, account_id: str):
         redis_client.delete(AccountService._get_refresh_token_key(refresh_token))
         redis_client.delete(AccountService._get_account_refresh_token_key(account_id))
+
+    @staticmethod
+    def _revoke_stored_refresh_token(account_id: str) -> None:
+        """Revoke whichever refresh token is currently stored for this account, if any.
+
+        The refresh-token store keeps a single most-recent token per account (see
+        `_store_refresh_token`), so this ends that one active refresh chain -- the same
+        effect `logout` has always had.
+        """
+        refresh_token = redis_client.get(AccountService._get_account_refresh_token_key(account_id))
+        if refresh_token:
+            AccountService._delete_refresh_token(refresh_token.decode("utf-8"), account_id)
+
+    @staticmethod
+    @redis_fallback(default_return=None)
+    def invalidate_account_access_tokens(account_id: str) -> None:
+        """Reject console access tokens issued before this call for this account.
+
+        Access tokens are stateless JWTs verified only by signature and `exp`
+        (`PassportService`/`libs/passport.py`), so they cannot be revoked individually. This
+        records an `iat` cutoff instead: `get_account_jwt_token` embeds an `iat` claim at
+        issuance, and `ext_login._load_user_from_request` rejects any console token whose
+        `iat` predates this account's cutoff. The marker only needs to outlive the longest an
+        already-issued token can still be valid, so it expires after
+        `ACCESS_TOKEN_EXPIRE_MINUTES` -- after that every pre-cutoff token has expired on its
+        own anyway.
+        """
+        key = AccountService._get_account_token_invalidation_key(account_id)
+        now = int(datetime.now(UTC).timestamp())
+        redis_client.setex(key, timedelta(minutes=dify_config.ACCESS_TOKEN_EXPIRE_MINUTES), now)
+
+    @staticmethod
+    @redis_fallback(default_return=None)
+    def get_account_access_token_invalidated_before(account_id: str) -> int | None:
+        value = redis_client.get(AccountService._get_account_token_invalidation_key(account_id))
+        if value is None:
+            return None
+        return int(value)
+
+    @staticmethod
+    def is_access_token_stale(account_id: str, issued_at: int | None) -> bool:
+        """Whether a console access token's `iat` predates this account's invalidation cutoff.
+
+        Returns `False` (token accepted) when the token carries no `iat` or when Redis is
+        unavailable -- consistent with this module's fail-open posture for its other
+        Redis-backed checks (rate limiters, refresh tokens).
+        """
+        if issued_at is None:
+            return False
+        invalidated_before = AccountService.get_account_access_token_invalidated_before(account_id)
+        if invalidated_before is None:
+            return False
+        return issued_at < invalidated_before
+
+    @staticmethod
+    def revoke_account_sessions(account_id: str) -> None:
+        """Revoke this account's current sign-in session material.
+
+        Invoked after a password change so a session captured beforehand (e.g. a stolen
+        cookie) cannot keep being used afterward: the stored refresh token is deleted (it can
+        no longer mint new access/refresh tokens) and outstanding access tokens are made to
+        fail their next verification instead of riding out their own TTL.
+        """
+        AccountService._revoke_stored_refresh_token(account_id)
+        AccountService.invalidate_account_access_tokens(account_id)
 
     @staticmethod
     def get_account_by_email(email: str, *, session: Session) -> Account | None:
@@ -357,11 +430,16 @@ class AccountService:
 
     @staticmethod
     def get_account_jwt_token(account: Account) -> str:
-        exp_dt = datetime.now(UTC) + timedelta(minutes=dify_config.ACCESS_TOKEN_EXPIRE_MINUTES)
+        now_dt = datetime.now(UTC)
+        exp_dt = now_dt + timedelta(minutes=dify_config.ACCESS_TOKEN_EXPIRE_MINUTES)
         exp = int(exp_dt.timestamp())
         payload = {
             "user_id": account.id,
             "exp": exp,
+            # Lets `ext_login._load_user_from_request` reject this token if the account
+            # invalidates sessions issued before a later point in time (see
+            # `AccountService.is_access_token_stale` / `invalidate_account_access_tokens`).
+            "iat": int(now_dt.timestamp()),
             "iss": dify_config.EDITION,
             "sub": "Console API Passport",
         }
@@ -402,7 +480,13 @@ class AccountService:
 
     @staticmethod
     def update_account_password(account: Account, password: str, new_password: str, *, session: Session):
-        """update account password"""
+        """Update account password.
+
+        Rotating the password is meant to cut off any session stolen before this point, so
+        this also revokes the account's other open sessions (stored refresh token +
+        outstanding access tokens) via `revoke_account_sessions` -- see that method's
+        docstring for how each half is enforced.
+        """
         if account.password and not compare_password(password, account.password, account.password_salt):
             raise CurrentPasswordIncorrectError("Current password is incorrect.")
 
@@ -420,6 +504,8 @@ class AccountService:
         account.password_salt = base64_salt
         session.add(account)
         session.commit()
+
+        AccountService.revoke_account_sessions(account.id)
         return account
 
     @staticmethod
@@ -657,9 +743,7 @@ class AccountService:
 
     @staticmethod
     def logout(*, account: Account):
-        refresh_token = redis_client.get(AccountService._get_account_refresh_token_key(account.id))
-        if refresh_token:
-            AccountService._delete_refresh_token(refresh_token.decode("utf-8"), account.id)
+        AccountService._revoke_stored_refresh_token(account.id)
 
     @staticmethod
     def refresh_token(refresh_token: str, *, session: Session) -> TokenPair:
@@ -1172,6 +1256,34 @@ class AccountService:
     @redis_fallback(default_return=None)
     def reset_change_email_error_rate_limit(email: str):
         key = f"change_email_error_rate_limit:{email}"
+        redis_client.delete(key)
+
+    @staticmethod
+    @redis_fallback(default_return=None)
+    def add_account_deletion_error_rate_limit(email: str):
+        key = f"account_deletion_error_rate_limit:{email}"
+        count = redis_client.get(key)
+        if count is None:
+            count = 0
+        count = int(count) + 1
+        redis_client.setex(key, dify_config.ACCOUNT_DELETION_LOCKOUT_DURATION, count)
+
+    @staticmethod
+    @redis_fallback(default_return=False)
+    def is_account_deletion_error_rate_limit(email: str) -> bool:
+        key = f"account_deletion_error_rate_limit:{email}"
+        count = redis_client.get(key)
+        if count is None:
+            return False
+        count = int(count)
+        if count > AccountService.ACCOUNT_DELETION_MAX_ERROR_LIMITS:
+            return True
+        return False
+
+    @staticmethod
+    @redis_fallback(default_return=None)
+    def reset_account_deletion_error_rate_limit(email: str):
+        key = f"account_deletion_error_rate_limit:{email}"
         redis_client.delete(key)
 
     @staticmethod

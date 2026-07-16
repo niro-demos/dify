@@ -2,9 +2,10 @@ import inspect
 from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
-from flask import Flask
+from flask import Flask, Response
 from werkzeug.exceptions import NotFound
 
+import libs.login as login_module
 from controllers.console import console_ns
 from controllers.console.auth.error import (
     EmailAlreadyInUseError,
@@ -29,11 +30,13 @@ from controllers.console.workspace.account import (
 )
 from controllers.console.workspace.error import (
     AccountAlreadyInitedError,
+    AccountDeletionLimitError,
     CurrentPasswordIncorrectError,
     InvalidAccountDeletionCodeError,
 )
+from extensions.ext_login import DifyLoginManager
 from models import Account
-from models.account import AccountStatus
+from models.account import AccountStatus, Tenant
 from models.enums import CreatorUserRole
 from services.errors.account import CurrentPasswordIncorrectError as ServicePwdError
 
@@ -326,6 +329,61 @@ class TestAccountDeleteApi:
             with pytest.raises(InvalidAccountDeletionCodeError):
                 method(api, user)
 
+    def test_repeated_wrong_deletion_codes_are_rate_limited(self, app: Flask):
+        """TC-47865D65 regression: guessing the deletion code must be
+        rate-limited the same way sibling verification-code flows are (see
+        `AccountService.ACCOUNT_DELETION_MAX_ERROR_LIMITS`), instead of
+        accepting unlimited guesses against the live endpoint."""
+        api = AccountDeleteApi()
+        method = inspect.unwrap(api.post)
+
+        payload = {"token": "t", "code": "000000"}
+        user = make_account()
+
+        class FakeRedis:
+            """Minimal in-memory get/setex/delete stand-in so the real
+            rate-limit accounting logic runs end-to-end, the way it would
+            against a real Redis instance."""
+
+            def __init__(self) -> None:
+                self._store: dict[str, bytes] = {}
+
+            def get(self, key: str):
+                return self._store.get(key)
+
+            def setex(self, key: str, _time, value) -> None:
+                self._store[key] = str(value).encode()
+
+            def delete(self, key: str) -> None:
+                self._store.pop(key, None)
+
+        with (
+            app.test_request_context("/", json=payload),
+            patch.object(type(console_ns), "payload", new_callable=PropertyMock, return_value=payload),
+            patch("services.account_service.redis_client", FakeRedis()),
+            patch(
+                "controllers.console.workspace.account.AccountService.verify_account_deletion_code",
+                return_value=False,
+            ),
+        ):
+            observed_errors: list[type[Exception]] = []
+            for _ in range(10):
+                try:
+                    method(api, user)
+                except (InvalidAccountDeletionCodeError, AccountDeletionLimitError) as exc:
+                    observed_errors.append(type(exc))
+                    if isinstance(exc, AccountDeletionLimitError):
+                        break
+
+        assert AccountDeletionLimitError in observed_errors, (
+            "expected repeated wrong deletion-code guesses to eventually be rejected with a "
+            f"rate-limit error; observed only {observed_errors}"
+        )
+        # The lockout must kick in only after a handful of wrong guesses, not
+        # on the very first one -- otherwise a legitimate user who fat-fingers
+        # the code once would be locked out immediately.
+        assert observed_errors[0] is InvalidAccountDeletionCodeError
+
 
 class TestChangeEmailApis:
     def test_check_email_code_invalid(self, app: Flask):
@@ -421,3 +479,79 @@ class TestCheckEmailUniqueApi:
         ):
             with pytest.raises(AccountInFreezeError):
                 method(api)
+
+
+class TestCheckEmailUniqueRequiresAuthentication:
+    """TC-8199783B regression: an unauthenticated caller must not be able to
+    learn whether an email belongs to a registered account via this
+    endpoint's status code/body -- it must require login like the other
+    account-management endpoints in this file.
+
+    These tests exercise the real decorator stack (unlike
+    `TestCheckEmailUniqueApi`, which calls the unwrapped method), so they
+    need their own Flask app wired with an actual login manager.
+    """
+
+    @pytest.fixture
+    def login_app(self) -> Flask:
+        app = Flask(__name__)
+        app.config["TESTING"] = True
+        login_manager = DifyLoginManager()
+        login_manager.init_app(app)
+        # Mirror the real app's registered unauthorized handler (see
+        # extensions/ext_login.py) so an anonymous request gets back a
+        # Response rather than flask-login's default `abort(401)`.
+        login_manager.unauthorized = lambda: Response("Unauthorized", status=401, content_type="application/json")
+
+        @login_manager.user_loader
+        def _load_user(_user_id: str):
+            return None
+
+        return app
+
+    def _authenticated_account(self) -> Account:
+        account = make_account("acc-authed")
+        tenant = Tenant(name="Tenant")
+        tenant.id = "tenant-1"
+        account._current_tenant = tenant
+        return account
+
+    def test_anonymous_request_is_rejected_without_revealing_existence(self, login_app: Flask, monkeypatch):
+        api = CheckEmailUnique()
+        monkeypatch.setattr(login_module, "_resolve_current_user", lambda: None)
+
+        payload = {"email": "member-org-a@niro-dify.test"}
+        with (
+            login_app.test_request_context("/", method="POST", json=payload),
+            patch("controllers.console.workspace.account.dify_config.EDITION", "CLOUD"),
+            patch("controllers.console.workspace.account.AccountService.check_email_unique") as check_unique_mock,
+        ):
+            result = api.post()
+
+        assert isinstance(result, Response)
+        assert result.status_code == 401
+        # The whole point of the invariant: an anonymous caller must never
+        # reach the existence check at all.
+        check_unique_mock.assert_not_called()
+
+    def test_authenticated_user_can_still_check_email_uniqueness(self, login_app: Flask, monkeypatch):
+        """Positive control: a logged-in user performing the same request the
+        account-page email-change modal makes must still get a normal
+        answer, proving the rejection above is specific to being
+        unauthenticated rather than a broken endpoint."""
+        api = CheckEmailUnique()
+        account = self._authenticated_account()
+        monkeypatch.setattr(login_module, "_resolve_current_user", lambda: account)
+        monkeypatch.setattr(login_module, "check_csrf_token", lambda *args, **kwargs: None)
+        payload = {"email": "someone-new@test.com"}
+
+        with (
+            login_app.test_request_context("/", method="POST", json=payload),
+            patch("controllers.console.workspace.account.dify_config.EDITION", "CLOUD"),
+            patch("controllers.console.workspace.account.AccountService.is_account_in_freeze", return_value=False),
+            patch("controllers.console.workspace.account.AccountService.check_email_unique", return_value=True),
+            patch.object(type(console_ns), "payload", new_callable=PropertyMock, return_value=payload),
+        ):
+            result = api.post()
+
+        assert result["result"] == "success"

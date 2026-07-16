@@ -941,6 +941,14 @@ class AuthConfig(BaseSettings):
         default=86400,
     )
 
+    ACCOUNT_DELETION_LOCKOUT_DURATION: PositiveInt = Field(
+        description=(
+            "Time (in seconds) a user must wait before retrying an account-deletion confirmation "
+            "code after exceeding the rate limit."
+        ),
+        default=86400,
+    )
+
     ENABLE_OAUTH_BEARER: bool = Field(
         description="Enable OAuth bearer authentication (device-flow + Service API /v1/* bearer middleware).",
         default=True,
